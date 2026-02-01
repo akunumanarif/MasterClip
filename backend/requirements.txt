@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+python-multipart
+yt-dlp
+ffmpeg-python
+openai-whisper
+opencv-python-headless
+ultralytics
