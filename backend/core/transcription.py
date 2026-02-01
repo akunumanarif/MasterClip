@@ -26,6 +26,7 @@ def generate_dynamic_subtitles(video_path: str, model_size: str = "small"):
     ass_path = os.path.splitext(video_path)[0] + ".ass"
     
     # ASS Header
+    # ASS Header
     ass_header = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -33,49 +34,70 @@ PlayResY: 1920
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,80,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,0,2,10,10,250,1
+Style: Default,Arial,60,&H00FFFF00,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,0,2,50,50,250,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
-    # PrimaryColour is White (FFFFFF), SecondaryColour is Yellow (00FFFF) -- BGR format in ASS
+    # PrimaryColour (Filled) is Cyan (&H00FFFF00 - BGR: 00 FFFF)
+    # SecondaryColour (Unfilled) is White (&H00FFFFFF)
     
     with open(ass_path, "w", encoding="utf-8") as f:
         f.write(ass_header)
         
         for segment in result["segments"]:
             words = segment["words"]
-            # We want to display a group of words (phrase) at a time, e.g., 3-5 words
-            # For simplicity in this iteration, let's display the whole segment (if short) 
-            # or break it into chunks of ~4 words.
             
-            chunk_size = 5
+            # Use larger chunks (6 words) split into 2 lines for "Center Stacked" look
+            chunk_size = 6
             for i in range(0, len(words), chunk_size):
                 chunk = words[i:i+chunk_size]
                 if not chunk: continue
                 
                 start_time = format_timestamp(chunk[0]["start"])
                 end_time = format_timestamp(chunk[-1]["end"])
+                chunk_start_seconds = chunk[0]["start"]
                 
-                # Build the karaoke text: {\k15}Word {\k20}Word
                 text_content = ""
-                for word in chunk:
-                    # Duration in centiseconds
-                    duration = int((word["end"] - word["start"]) * 100) 
-                    text = word["word"].strip()
-                    # Highlight color approach: 
-                    # Use {\1c&H00FFFF&} for highlight, {\1c&HFFFFFF&} for normal?
-                    # Karaoke tag {\k<duration>} highlights the text progressively.
-                    # Or for "active word" style:
-                    # We can't easily do "Karaoke" fill without a specific font/player support sometimes.
-                    # A better "OpusClip" style is: All words white, Current word Yellow.
-                    # But standard ASS karaoke {\k} just fills the color from Secondary to Primary.
-                    # Let's try standard Karaoke first: Output is Secondary (Yellow) -> Primary (White).
-                    # Wait, usually it's Primary -> Secondary.
-                    # Let's stick to explicit coloring if we want "Active Word" vs "Past Word".
-                    # Actually, {\k} is the easiest "moving" effect.
+                split_idx = (len(chunk) + 1) // 2 # Split roughly in half (e.g. 3 on top, 3 on bottom)
+                
+                for idx, word in enumerate(chunk):
+                    # Insert Line Break at split point
+                    if idx == split_idx:
+                        # Remove trailing space from previous word if any, though ASS ignores it usually.
+                        # We just insert \N. 
+                        # Note: The previous word added a space. \N will make it a newline. 
+                        text_content += "\\N"
                     
-                    text_content += f"{{\\k{duration}}}{text} "
+                    # Duration in centiseconds for karaoke
+                    duration = int((word["end"] - word["start"]) * 100) 
+                    text = word["word"].strip().upper() # ALL CAPS
+                    
+                    # Animation Logic: "Snap-Pop" (Kick Drum Style)
+                    # Instead of growing slowly (which causes jitter), we SNAP to big, then shrink.
+                    # This feels punchier and reduces the time the text is 'moving' outward.
+                    
+                    rel_start = int((word["start"] - chunk_start_seconds) * 1000)
+                    rel_end = int((word["end"] - chunk_start_seconds) * 1000)
+                    
+                    # Pop Peak: slightly reduced to 110% to minimize layout shift artifacts
+                    # Border: Pop from 3 to 6 for extra emphasis without layout shift
+                    
+                    # 1. Instant Pop Up (at start time)
+                    # We use a very short transition (50ms) effectively instant
+                    pop_dur = 50
+                    t_pop_end = rel_start + pop_dur
+                    if t_pop_end > rel_end: t_pop_end = rel_end
+                    
+                    # 2. Shrink Down (rest of duration)
+                    
+                    # Tag: \t(start, end, accel, attrs)
+                    # \t(t1, t2, \fscx110\fscy110\bord6) -> Snap Up
+                    # \t(t2, t3, \fscx100\fscy100\bord3) -> Shrink Down
+                    
+                    anim_tags = f"\\t({rel_start},{t_pop_end},\\fscx110\\fscy110\\bord6)\\t({t_pop_end},{rel_end},\\fscx100\\fscy100\\bord3)"
+                    
+                    text_content += f"{{\\k{duration}}}{{{anim_tags}}}{text} "
                 
                 f.write(f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{text_content.strip()}\n")
 
