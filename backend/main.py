@@ -33,6 +33,8 @@ class ProcessRequest(BaseModel):
     youtube_url: str
     segments: List[ClipSegment]
     project_name: str = "Untitled"
+    resolution: str = "1080p" # Default to High Quality
+    cookies_file: Optional[str] = None # Optional: Path to YouTube cookies file
 
 def update_status(project_id: str, status: str, message: str = ""):
     project_status[project_id] = {"status": status, "message": message}
@@ -45,10 +47,15 @@ def process_pipeline(request: ProcessRequest, project_id: str):
     """
     try:
         update_status(project_id, "processing", "Starting download...")
-        print(f"[{project_id}] Starting processing for {request.youtube_url}")
+        print(f"[{project_id}] Starting processing for {request.youtube_url} @ {request.resolution}")
         
         # 1. Download (Once)
-        video_path = download_youtube_video(request.youtube_url, TEMP_DIR)
+        video_path = download_youtube_video(
+            request.youtube_url, 
+            TEMP_DIR, 
+            request.resolution,
+            request.cookies_file
+        )
         
         output_files = []
         total_clips = len(request.segments)
@@ -79,16 +86,30 @@ def process_pipeline(request: ProcessRequest, project_id: str):
             # 5. Burn Subtitles (Hardcode)
             final_output_path = os.path.join(OUTPUT_DIR, f"{clip_id}_final.mp4")
             
-            # FFmpeg filter to burn subtitles. 
+            # FFmpeg filter to burn subtitles with HIGH QUALITY settings
             ass_path_fwd = ass_path.replace("\\", "/")
             
             input_stream = ffmpeg.input(reframed_path)
             video = input_stream.video.filter('ass', ass_path_fwd)
             audio = input_stream.audio
             
+            # Use same high-quality settings as reframing for consistency
+            # NOTE: When using CRF, do NOT specify video_bitrate (let CRF control it)
             (
                 ffmpeg
-                .output(video, audio, final_output_path)
+                .output(
+                    video, audio, final_output_path,
+                    vcodec='libx264',
+                    acodec='aac',
+                    **{
+                        'crf': 18,                     # High quality (18 = visually lossless)
+                        'preset': 'slow',              # Better compression
+                        'profile:v': 'high',           # H.264 High Profile
+                        'pix_fmt': 'yuv420p',          # Compatibility
+                        'movflags': '+faststart',      # Web optimization
+                        'b:a': '192k'                  # High quality audio (use b:a not audio_bitrate)
+                    }
+                )
                 .overwrite_output()
                 .run(capture_stdout=True, capture_stderr=True)
             )

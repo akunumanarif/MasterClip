@@ -1,2 +1,24 @@
 /output/*
 /temp/*
+
+# Cookies (contains sensitive login data)
+*.cookies.txt
+**/youtube_cookies.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Node.js
+node_modules/
+.next/
+.vercel/
+
+# OS
+.DS_Store
+Thumbs.db

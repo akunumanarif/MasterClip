@@ -1,5 +1,6 @@
 import os
 import ffmpeg
+from typing import Optional
 
 def extract_highlight(video_path: str, start_time: str, end_time: str, output_path: str):
     """
@@ -89,96 +90,393 @@ def detect_visual_interest_x(video_path: str, samples: int = 30) -> int:
     1. Held Objects (Book, Cell Phone, Laptop, Bottle, Cup, Remote)
     2. Persons (if no objects found)
     """
+
+def detect_faces_mediapipe(video_path: str, width: int, height: int) -> Optional[dict]:
+    """
+    Detect faces using MediaPipe Face Detection - MUCH more accurate!
+    Returns dict with per-frame positions AND face widths for safety margins.
+    """
+    try:
+        import mediapipe as mp
+        from mediapipe.tasks import python
+        from mediapipe.tasks.python import vision
+        import urllib.request
+        import os
+        
+        # Download model if not exists
+        model_path = "detector.tflite"
+        if not os.path.exists(model_path):
+            print("  Downloading MediaPipe face detection model...")
+            url = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
+            urllib.request.urlretrieve(url, model_path)
+        
+        # Create FaceDetector
+        base_options = python.BaseOptions(model_asset_path=model_path)
+        options = vision.FaceDetectorOptions(
+            base_options=base_options,
+            min_detection_confidence=0.5
+        )
+        detector = vision.FaceDetector.create_from_options(options)
+        
+        cap = cv2.VideoCapture(video_path)
+        frame_interval = 15
+        frame_num = 0
+        frame_positions = []
+        
+        print("  Detecting faces with MediaPipe (accurate bounding boxes)...")
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            if frame_num % frame_interval != 0:
+                frame_num += 1
+                continue
+            
+            # Convert to RGB and create MediaPipe Image
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            
+            # Detect faces
+            detection_result = detector.detect(mp_image)
+            
+            if detection_result.detections:
+                # Pick best detection
+                best_detection = None
+                best_score = -1
+                
+                for detection in detection_result.detections:
+                    score = detection.categories[0].score
+                    
+                    # Get bounding box
+                    bbox = detection.bounding_box
+                    x = bbox.origin_x
+                    y = bbox.origin_y
+                    w = bbox.width
+                    h = bbox.height
+                    
+                    # Filter: upper region priority
+                    center_y = y + h/2
+                    if center_y > height * 0.7:
+                        continue
+                    
+                    # Calculate face center
+                    center_x = x + w/2
+                    
+                    # Score based on size and position
+                    area = w * h
+                    distance_from_center = abs(center_x - width/2)
+                    centrality = 1.0 - (distance_from_center / (width/2))
+                    combined_score = (area * 0.7) + (centrality * 1000) + (score * 500)
+                    
+                    if combined_score > best_score:
+                        best_score = combined_score
+                        best_detection = {
+                            'center_x': center_x,
+                            'face_width': w,
+                            'confidence': score,
+                            'bbox': (x, y, w, h)
+                        }
+                
+                if best_detection:
+                    frame_positions.append((
+                        frame_num,
+                        best_detection['center_x'],
+                        best_detection['face_width'],
+                        best_detection['confidence']
+                    ))
+            
+            frame_num += 1
+        
+        cap.release()
+        detector.close()
+        
+        if len(frame_positions) > 0:
+            print(f"  Found {len(frame_positions)} face frames with bounding boxes")
+            
+            # Calculate average face width
+            avg_face_width = sum(w for _, _, w, _ in frame_positions) / len(frame_positions)
+            
+            return {
+                'positions': frame_positions,
+                'method': 'mediapipe_face',
+                'confidence': sum(c for _, _, _, c in frame_positions) / len(frame_positions),
+                'avg_face_width': avg_face_width
+            }
+        
+        print("  No faces detected - will try body tracking")
+        return None
+        
+    except Exception as e:
+        print(f"  MediaPipe face detection error: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def detect_body_positions(video_path: str, width: int, height: int) -> Optional[dict]:
+    """
+    Detect person body positions using YOLO as fallback when face detection fails.
+    Returns dict with per-frame positions for profile views.
+    """
     global yolo_model
     try:
-        from ultralytics import YOLO
         if yolo_model is None:
-            print("Loading YOLOv8 Model...")
-            yolo_model = YOLO("yolov8n.pt")
-    except ImportError:
-        print("Ultralytics/YOLO not installed. Falling back to center.")
+            from ultralytics import YOLO
+            yolo_model = YOLO('yolov8n.pt')
+        
+        cap = cv2.VideoCapture(video_path)
+        frame_interval = 15
+        frame_num = 0
+        frame_positions = []
+        
+        print("  Detecting body positions (profile view fallback)...")
+        
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            if frame_num % frame_interval != 0:
+                frame_num += 1
+                continue
+            
+            # Run YOLO detection
+            results = yolo_model(frame, verbose=False)
+            
+            best_score = -1
+            best_center = None
+            
+            for r in results:
+                boxes = r.boxes
+                for box in boxes:
+                    cls = int(box.cls[0])
+                    if cls != 0:  # Only persons
+                        continue
+                    
+                    coords = box.xyxy[0].tolist()
+                    x1, y1, x2, y2 = coords
+                    
+                    # Upper region priority
+                    center_y = (y1 + y2) / 2
+                    if center_y > height * 0.7:
+                        continue
+                    
+                    center_x = (x1 + x2) / 2
+                    area = (x2 - x1) * (y2 - y1)
+                    
+                    # Score: favor larger + more centered
+                    distance_from_center = abs(center_x - width/2)
+                    centrality_bias = (1.0 - distance_from_center / (width/2)) * area * 0.3
+                    score = area + centrality_bias
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_center = center_x
+            
+            if best_center:
+                confidence = min(1.0, best_score / 100000)
+                # Add placeholder face_width (0) to match MediaPipe format
+                frame_positions.append((frame_num, best_center, 0, confidence))
+            
+            frame_num += 1
+        
+        cap.release()
+        
+        if len(frame_positions) > 0:
+            print(f"  Found {len(frame_positions)} body frames")
+            # No avg_face_width for body tracking
+            return {
+                'positions': frame_positions,
+                'method': 'body',
+                'confidence': sum(c for _, _, _, c in frame_positions) / len(frame_positions),
+                'avg_face_width': 0  # Placeholder
+            }
+        
+        return None
+        
+    except Exception as e:
+        print(f"  Body tracking error: {e}")
         return None
 
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened(): return None
+
+
+def create_smooth_trajectory(positions: list, total_frames: int, fps: float) -> dict:
+    """
+    Create smooth position trajectory for entire video with interpolation.
+    Returns dict: {frame_num: x_position} for ALL frames.
+    """
+    import numpy as np
+    from scipy import interpolate
     
+    if not positions or len(positions) == 0:
+        return None
+    
+    # Extract frame numbers, positions, and confidence
+    # Now positions is (frame_num, x, face_width, confidence)
+    frames = [f for f, _, _, _ in positions]
+    x_positions = [x for _, x, _, _ in positions]
+    face_widths = [w for _, _, w, _ in positions]
+    confidences = [c for _, _, _, c in positions]
+    
+    # Create interpolation function (cubic spline for smooth curves)
+    try:
+        # Use weighted average for overlapping frames
+        unique_frames = []
+        unique_positions = []
+        
+        frame_positions = {}
+        for f, x, w, c in positions:
+            if f not in frame_positions:
+                frame_positions[f] = []
+            frame_positions[f].append((x, c))
+        
+       # Average positions for each frame (weighted by confidence)
+        for f in sorted(frame_positions.keys()):
+            pos_conf = frame_positions[f]
+            total_conf = sum(c for _, c in pos_conf)
+            if total_conf > 0:
+                avg_x = sum(x * c for x, c in pos_conf) / total_conf
+                unique_frames.append(f)
+                unique_positions.append(avg_x)
+        
+        # Interpolate for all frames
+        if len(unique_frames) < 2:
+            # Not enough data, use single position
+            single_pos = int(unique_positions[0])
+            return {i: single_pos for i in range(total_frames)}
+        
+        # Cubic interpolation for smooth motion
+        f_interp = interpolate.interp1d(
+            unique_frames, unique_positions,
+            kind='cubic' if len(unique_frames) >= 4 else 'linear',
+            bounds_error=False,
+            fill_value=(unique_positions[0], unique_positions[-1])
+        )
+        
+        # Generate position for every frame
+        all_frames = np.arange(total_frames)
+        interpolated = f_interp(all_frames)
+        
+        # Apply heavy temporal smoothing to prevent jitter
+        window = min(45, int(fps * 1.5))  # ~1.5 seconds of smoothing
+        if window > 3:
+            kernel = np.hamming(window)
+            kernel = kernel / kernel.sum()
+            smoothed = np.convolve(interpolated, kernel, mode='same')
+        else:
+            smoothed = interpolated
+        
+        # Convert to dict
+        trajectory = {i: int(smoothed[i]) for i in range(total_frames)}
+        
+        print(f"  Created smooth trajectory: {len(trajectory)} frames, window={window}")
+        return trajectory
+        
+    except Exception as e:
+        print(f"  Trajectory creation error: {e}, using fallback")
+        # Fallback: use median position
+        median_pos = int(np.median(x_positions))
+        return {i: median_pos for i in range(total_frames)}
+
+
+def detect_visual_interest_x(video_path: str) -> Optional[dict]:
+    """
+    FULL DYNAMIC DETECTION - returns per-frame position trajectory.
+    
+    Returns: {'trajectory': {frame_num: x_pos}, 'fps': fps, 'total_frames': n}
+    """
+    cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    
-    if total_frames <= 0: return width // 2
-    
-    centers = []
-    # Priority classes (COCO indices):
-    # 39: bottle, 41: cup, 63: laptop, 67: cell phone, 73: book, 76: scissors
-    PRIORITY_CLASSES = [39, 41, 63, 67, 73, 76]
-    
-    step = max(1, total_frames // samples)
-    
-    detections = [] # List of (priority, center_x, area)
-    
-    for i in range(0, total_frames, step):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-        ret, frame = cap.read()
-        if not ret: break
-        
-        # YOLO Prediction
-        results = yolo_model(frame, verbose=False)
-        
-        frame_best_priority = -1
-        frame_best_center = -1
-        frame_max_area = 0
-        
-        persons = [] # Keeping for safety, though unused in new logic
-        objects = []
-        
-        for r in results:
-            boxes = r.boxes
-            for box in boxes:
-                cls = int(box.cls[0])
-                # xyxy
-                coords = box.xyxy[0].tolist()
-                x1, y1, x2, y2 = coords
-                area = (x2 - x1) * (y2 - y1)
-                
-                priority = 0
-                if cls == 0: # Person
-                    priority = 2 # HIGHEST PRIORITY (Face/Person)
-                elif cls in PRIORITY_CLASSES: # Object
-                    priority = 1 # FALLBACK PRIORITY (Only if no person)
-                
-                # Selection Logic (Per Frame):
-                if priority > frame_best_priority:
-                    frame_best_priority = priority
-                    frame_best_center = (x1 + x2) // 2
-                    frame_max_area = area
-                elif priority == frame_best_priority:
-                     if area > frame_max_area:
-                        frame_max_area = area
-                        frame_best_center = (x1 + x2) // 2
-        
-        if frame_best_priority > 0:
-            detections.append((frame_best_priority, frame_best_center))
-            
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
     cap.release()
     
-    if not detections:
-        return None
+    print(f"Analyzing video: {width}x{height}, {total_frames} frames @ {fps:.2f}fps")
     
-    # Global Priority Logic
-    # If we found valid objects (priority 2), use them.
-    # Else use person (priority 1).
+    # STAGE 1: MediaPipe Face Detection (accurate bounding boxes)
+    print("Stage 1: MediaPipe face detection...")
+    detection_data = detect_faces_mediapipe(video_path, width, height)
     
-    priorities = [d[0] for d in detections]
-    max_priority = max(priorities)
-    final_centers = [d[1] for d in detections if d[0] == max_priority]
+    # STAGE 2: Body Tracking Fallback
+    if not detection_data or detection_data['confidence'] < 0.3:
+        print("Stage 2: Body tracking (low face confidence)...")
+        detection_data = detect_body_positions(video_path, width, height)
+    
+    if not detection_data:
+        print("No detections - using center crop")
+        center_x = width // 2
+        return {
+            'trajectory': {i: center_x for i in range(total_frames)},
+            'fps': fps,
+            'total_frames': total_frames,
+            'width': width,
+            'height': height
+        }
+    
+    # Create smooth trajectory for ALL frames
+    positions = detection_data['positions']
+    trajectory = create_smooth_trajectory(positions, total_frames, fps)
+    
+    if trajectory is None:
+        print("Trajectory creation failed - using median")
+        median_x = int(np.median([x for _, x, _, _ in positions]))
+        trajectory = {i: median_x for i in range(total_frames)}
+    
+    # Apply anti-center bias to trajectory (REDUCED AGGRESSIVENESS)
+    center_x = width // 2
+    center_tolerance = width * 0.15
+    
+    # Check if average position is too centered
+    avg_x = sum(trajectory.values()) / len(trajectory)
+    if abs(avg_x - center_x) < center_tolerance:
+        print(f"  Trajectory too centered ({avg_x:.0f}), applying moderate shift...")
+        
+        # Find off-center regions
+        all_positions = list(trajectory.values())
+        from collections import Counter
+        position_counts = Counter(all_positions)
+        off_center = [(pos, cnt) for pos, cnt in position_counts.items() 
+                      if abs(pos - center_x) > center_tolerance]
+        
+        if off_center:
+            # Shift entire trajectory toward most common off-center position
+            # BUT ONLY 50% of the full shift (less aggressive)
+            target_pos = sorted(off_center, key=lambda x: x[1], reverse=True)[0][0]
+            full_shift = target_pos - avg_x
+            shift = int(full_shift * 0.5)  # Only 50% of calculated shift
+            trajectory = {f: int(x + shift) for f, x in trajectory.items()}
+            print(f"  Shifted trajectory by {shift:.0f}px (50% of {full_shift:.0f}px) toward X={target_pos}")
+    
+    # Clamp trajectory to valid bounds (prevent out-of-bounds crop)
+    target_width = int(height * (9/16))
+    for f in trajectory:
+        # Ensure crop center is at least target_width/2 from edges
+        min_x = target_width // 2
+        max_x = width - (target_width // 2)
+        trajectory[f] = max(min_x, min(trajectory[f], max_x))
+    
+    method = detection_data['method']
+    confidence = detection_data['confidence']
+    print(f"Trajectory created: {len(trajectory)} frames (method={method}, conf={confidence:.2f})")
+    
+    return {
+        'trajectory': trajectory,
+        'fps': fps,
+        'total_frames': total_frames,
+        'width': width,
+        'height': height,
+        'method': method,
+        'confidence': confidence
+    }
 
-    print(f"YOLO Summary: Found Max Priority {max_priority} in {len(final_centers)}/{len(detections)} frames.")
-    
-    return int(np.median(final_centers))
 
 def auto_reframe(video_path: str, output_path: str):
     """
-    Reframes video to 9:16 using AI Smart Crop (YOLO).
+    Reframes video to 9:16 using DYNAMIC FACE TRACKING.
+    Tracks face movement frame-by-frame for perfect framing.
     """
     try:
         # Get video info
@@ -186,43 +484,70 @@ def auto_reframe(video_path: str, output_path: str):
         video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
         width = int(video_stream['width'])
         height = int(video_stream['height'])
+        fps = float(video_stream['r_frame_rate'].split('/')[0]) / float(video_stream['r_frame_rate'].split('/')[1])
         
         # Target 9:16 dimensions
         target_width = int(height * (9/16))
         target_height = height
         
-        # Smart AI Detection
-        print("Reframing: Analyzing video content with YOLOv8...")
-        center_x = detect_visual_interest_x(video_path)
+        # STATIC CENTERED FACE CROP (no dynamic movement)
+        print("Detecting face for centered stable crop...")
+        tracking_data = detect_visual_interest_x(video_path)
         
-        if center_x is not None:
-             print(f"Reframing: Visual Interest detected at X={center_x}")
+        if not tracking_data or 'trajectory' not in tracking_data:
+            print("Face detection failed - using center crop")
+            x = (width - target_width) // 2
+            y = 0
         else:
-             print("Reframing: Nothing detected. Defaulting to center.")
-             center_x = width // 2
-        
-        # Calculate Crop X
-        x = center_x - (target_width // 2)
-        
-        # Clamp bounds
-        if x < 0: x = 0
-        if x + target_width > width: x = width - target_width
+            trajectory = tracking_data['trajectory']
+            avg_face_width = tracking_data.get('avg_face_width', 0)
             
-        y = 0 # Top alignment for full height
-
+            # Calculate MEDIAN position (most stable, ignores outliers)
+            all_positions = list(trajectory.values())
+            face_center_x = int(np.median(all_positions))
+            
+            print(f"Face detected at median X={face_center_x}")
+            
+            # CRITICAL: Safety Margin - ensure crop wide enough for full face
+            if avg_face_width > 0:
+                required_width = int(avg_face_width * 1.5)  # 50% margin
+                if required_width > target_width:
+                    print(f"  Adjusting crop width: {target_width} → {required_width}px for face")
+                    target_width = min(required_width, width)
+            
+            # Calculate crop X to CENTER the face in the crop
+            x = face_center_x - (target_width // 2)
+            
+            # Clamp to valid bounds
+            x = max(0, min(x, width - target_width))
+            y = 0
+            
+            print(f"Applying STATIC crop: X={x}, face centered at {face_center_x}")
+        
+        # Apply STATIC crop (single position for entire video - NO SHIFTING!)
         input_stream = ffmpeg.input(video_path)
         audio = input_stream.audio
-        
-        # Apply crop
         video = input_stream.video.filter('crop', target_width, target_height, x, y)
         
+        # High-quality encoding
         (
             ffmpeg
-            .output(video, audio, output_path)
+            .output(
+                video, audio, output_path,
+                vcodec='libx264',
+                acodec='aac',
+                **{
+                    'crf': 18,
+                    'preset': 'slow',
+                    'profile:v': 'high',
+                    'b:a': '192k'
+                }
+            )
             .overwrite_output()
-            .run(capture_stdout=True, capture_stderr=True)
+            .run(quiet=False)
         )
-        return output_path
-    except ffmpeg.Error as e:
-        print(f"FFmpeg Error: {e.stderr.decode('utf-8')}")
+        
+        print(f"Reframing complete: {output_path}")
+    except Exception as e:
+        print(f"Reframing error: {e}")
         raise
