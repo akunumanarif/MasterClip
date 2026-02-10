@@ -35,6 +35,7 @@ class ProcessRequest(BaseModel):
     project_name: str = "Untitled"
     resolution: str = "1080p" # Default to High Quality
     cookies_file: Optional[str] = None # Optional: Path to YouTube cookies file
+    color_grading: str = "none" # Color grading preset
 
 def update_status(project_id: str, status: str, message: str = ""):
     project_status[project_id] = {"status": status, "message": message}
@@ -72,9 +73,9 @@ def process_pipeline(request: ProcessRequest, project_id: str):
             
             update_status(project_id, "processing", f"Processing Clip {clip_num}/{total_clips}: Reframing (Face Detection)...")
             
-            # 3. Auto Reframe (9:16)
+            # 3. Auto Reframe (9:16) with Color Grading
             reframed_path = os.path.join(OUTPUT_DIR, f"{clip_id}_9_16.mp4")
-            auto_reframe(cut_path, reframed_path)
+            auto_reframe(cut_path, reframed_path, color_grading=request.color_grading)
             
             update_status(project_id, "processing", f"Processing Clip {clip_num}/{total_clips}: Generating subtitles...")
             

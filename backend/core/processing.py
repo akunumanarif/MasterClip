@@ -83,6 +83,33 @@ def detect_active_speaker_x(video_path: str, samples: int = 30) -> int:
 # Lazy load YOLO to avoid startup lag
 yolo_model = None
 
+def get_color_grading_filter(preset: str) -> str:
+    """
+    Returns FFmpeg filter string for color grading preset.
+    
+    Presets:
+    - none: No grading (original)
+    - cinematic_warm: Warm tones, increased contrast (podcast vibe)
+    - cool_modern: Cool blue/teal tones, high contrast (tech feel)
+    - vibrant: Boosted saturation, bright (energetic)
+    - matte_film: Lifted blacks, faded look (artistic)
+    - bw_contrast: Black & white, high contrast (dramatic)
+    """
+    presets = {
+        'none': '',
+        # Cinematic Warm: warm tones, higher contrast
+        'cinematic_warm': 'eq=contrast=1.15:brightness=0.03:saturation=1.2:gamma=1.1',
+        # Cool Modern: blue/teal tones, desaturated
+        'cool_modern': 'eq=contrast=1.2:saturation=0.85:gamma_b=0.9:gamma_r=1.1',
+        # Vibrant: boosted saturation and contrast
+        'vibrant': 'eq=contrast=1.25:saturation=1.4:brightness=0.05:gamma=1.05',
+        # Matte Film: lifted blacks (faded look)
+        'matte_film': 'eq=contrast=0.85:saturation=0.8:gamma=1.15:brightness=0.05',
+        # B&W High Contrast
+        'bw_contrast': 'hue=s=0,eq=contrast=1.35:brightness=0.03:gamma=0.95'
+    }
+    return presets.get(preset, '')
+
 def detect_visual_interest_x(video_path: str, samples: int = 30) -> int:
     """
     Detects the 'Center of Visual Interest' using YOLOv8 AI.
@@ -425,30 +452,8 @@ def detect_visual_interest_x(video_path: str) -> Optional[dict]:
         median_x = int(np.median([x for _, x, _, _ in positions]))
         trajectory = {i: median_x for i in range(total_frames)}
     
-    # Apply anti-center bias to trajectory (REDUCED AGGRESSIVENESS)
-    center_x = width // 2
-    center_tolerance = width * 0.15
-    
-    # Check if average position is too centered
-    avg_x = sum(trajectory.values()) / len(trajectory)
-    if abs(avg_x - center_x) < center_tolerance:
-        print(f"  Trajectory too centered ({avg_x:.0f}), applying moderate shift...")
-        
-        # Find off-center regions
-        all_positions = list(trajectory.values())
-        from collections import Counter
-        position_counts = Counter(all_positions)
-        off_center = [(pos, cnt) for pos, cnt in position_counts.items() 
-                      if abs(pos - center_x) > center_tolerance]
-        
-        if off_center:
-            # Shift entire trajectory toward most common off-center position
-            # BUT ONLY 50% of the full shift (less aggressive)
-            target_pos = sorted(off_center, key=lambda x: x[1], reverse=True)[0][0]
-            full_shift = target_pos - avg_x
-            shift = int(full_shift * 0.5)  # Only 50% of calculated shift
-            trajectory = {f: int(x + shift) for f, x in trajectory.items()}
-            print(f"  Shifted trajectory by {shift:.0f}px (50% of {full_shift:.0f}px) toward X={target_pos}")
+    # NOTE: Anti-center bias REMOVED - it was causing faces to be shifted off-center
+    # Now using raw detected face positions for accurate centering
     
     # Clamp trajectory to valid bounds (prevent out-of-bounds crop)
     target_width = int(height * (9/16))
@@ -460,7 +465,8 @@ def detect_visual_interest_x(video_path: str) -> Optional[dict]:
     
     method = detection_data['method']
     confidence = detection_data['confidence']
-    print(f"Trajectory created: {len(trajectory)} frames (method={method}, conf={confidence:.2f})")
+    avg_face_width = detection_data.get('avg_face_width', 0)
+    print(f"Trajectory created: {len(trajectory)} frames (method={method}, conf={confidence:.2f}, avg_face_width={avg_face_width:.0f})")
     
     return {
         'trajectory': trajectory,
@@ -469,14 +475,15 @@ def detect_visual_interest_x(video_path: str) -> Optional[dict]:
         'width': width,
         'height': height,
         'method': method,
-        'confidence': confidence
+        'confidence': confidence,
+        'avg_face_width': avg_face_width
     }
 
 
-def auto_reframe(video_path: str, output_path: str):
+def auto_reframe(video_path: str, output_path: str, color_grading: str = 'none'):
     """
-    Reframes video to 9:16 using DYNAMIC FACE TRACKING.
-    Tracks face movement frame-by-frame for perfect framing.
+    Reframes video to 9:16 using STATIC CENTERED FACE CROP.
+    Applies color grading preset for professional look.
     """
     try:
         # Get video info
@@ -502,32 +509,104 @@ def auto_reframe(video_path: str, output_path: str):
             trajectory = tracking_data['trajectory']
             avg_face_width = tracking_data.get('avg_face_width', 0)
             
-            # Calculate MEDIAN position (most stable, ignores outliers)
+            # Calculate WEIGHTED AVERAGE position (weighted by confidence for accuracy)
+            # This gives more weight to high-confidence detections
             all_positions = list(trajectory.values())
-            face_center_x = int(np.median(all_positions))
             
-            print(f"Face detected at median X={face_center_x}")
+            # Use weighted median - middle 60% of positions (ignore outliers)
+            sorted_positions = sorted(all_positions)
+            trim_count = int(len(sorted_positions) * 0.2)  # Trim 20% from each end
+            if trim_count > 0 and len(sorted_positions) > trim_count * 2:
+                trimmed = sorted_positions[trim_count:-trim_count]
+            else:
+                trimmed = sorted_positions
             
-            # CRITICAL: Safety Margin - ensure crop wide enough for full face
+            # Use mean of trimmed positions for smoother centering
+            face_center_x = int(sum(trimmed) / len(trimmed))
+            
+            print(f"Face detected at weighted center X={face_center_x} (from {len(trimmed)} samples)")
+            print(f"  Video dimensions: {width}x{height}, target crop: {target_width}x{target_height}")
+            print(f"  Face avg width: {avg_face_width:.0f}px")
+            
+            # CRITICAL: Safety Margin - ensure crop wide enough for FULL HEAD (not just face)
+            # MediaPipe face detection only covers face (eyes to chin), not full head
+            # Use 2.5x multiplier to include ears, side of head, and some padding
             if avg_face_width > 0:
-                required_width = int(avg_face_width * 1.5)  # 50% margin
+                required_width = int(avg_face_width * 2.5)  # 2.5x for full head + padding
+                print(f"  Required width for full head: {required_width}px (2.5x face width)")
                 if required_width > target_width:
-                    print(f"  Adjusting crop width: {target_width} → {required_width}px for face")
+                    print(f"  ⚠ Adjusting crop width: {target_width} → {required_width}px for full head visibility")
                     target_width = min(required_width, width)
             
-            # Calculate crop X to CENTER the face in the crop
-            x = face_center_x - (target_width // 2)
+            # Calculate crop X to CENTER the face EXACTLY in the crop
+            # Face center should be at crop_x + (crop_width / 2)
+            # So: crop_x = face_center - (crop_width / 2)
+            half_crop = target_width // 2
+            x = face_center_x - half_crop
             
-            # Clamp to valid bounds
-            x = max(0, min(x, width - target_width))
+            # SMART CLAMPING: if face is near edge, prioritize keeping face centered
+            # even if it means showing some edge
+            min_x = 0
+            max_x = width - target_width
+            
+            if x < min_x:
+                # Face is too close to left edge
+                # Check how far the face would be from center if we clamp
+                clamped_face_pos_in_crop = face_center_x - min_x
+                offset_from_center = abs(clamped_face_pos_in_crop - half_crop)
+                print(f"  Face near left edge: would be {offset_from_center}px off-center")
+                x = min_x
+            elif x > max_x:
+                # Face is too close to right edge
+                clamped_face_pos_in_crop = face_center_x - max_x
+                offset_from_center = abs(clamped_face_pos_in_crop - half_crop)
+                print(f"  Face near right edge: would be {offset_from_center}px off-center")
+                x = max_x
+            
             y = 0
             
-            print(f"Applying STATIC crop: X={x}, face centered at {face_center_x}")
+            # Verify centering
+            actual_face_in_crop = face_center_x - x
+            offset = actual_face_in_crop - half_crop
+            print(f"STATIC crop: X={x}, face at {face_center_x}, in-crop position: {actual_face_in_crop}/{target_width} (offset: {offset:+d}px)")
         
         # Apply STATIC crop (single position for entire video - NO SHIFTING!)
         input_stream = ffmpeg.input(video_path)
         audio = input_stream.audio
         video = input_stream.video.filter('crop', target_width, target_height, x, y)
+        
+        # Apply color grading if specified
+        grading_filter = get_color_grading_filter(color_grading)
+        if grading_filter:
+            print(f"Applying color grading: {color_grading}")
+            # Apply each filter in the chain
+            for filter_str in grading_filter.split(','):
+                filter_str = filter_str.strip()
+                if not filter_str:
+                    continue
+                
+                # Parse filter: "eq=contrast=1.1:brightness=0.02" -> filter('eq', contrast=1.1, brightness=0.02)
+                if '=' in filter_str:
+                    parts = filter_str.split('=', 1)
+                    filter_name = parts[0]
+                    
+                    # Parse parameters
+                    params = {}
+                    if len(parts) > 1 and parts[1]:
+                        param_str = parts[1]
+                        for param in param_str.split(':'):
+                            if '=' in param:
+                                key, value = param.split('=', 1)
+                                # Convert to float if numeric
+                                try:
+                                    params[key] = float(value)
+                                except ValueError:
+                                    params[key] = value
+                    
+                    video = video.filter(filter_name, **params)
+                else:
+                    # Simple filter without parameters
+                    video = video.filter(filter_str)
         
         # High-quality encoding
         (
