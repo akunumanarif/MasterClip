@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  backend:
+    build: 
+      context: ./backend
+    container_name: yt_clipper_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/output:/app/output
+      - ./backend/temp:/app/temp
+    restart: always
+
+  frontend:
+    build: 
+      context: ./frontend
+    container_name: yt_clipper_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      - backend
+    restart: always
