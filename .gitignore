@@ -1,5 +1,10 @@
 /output/*
 /temp/*
+/output/*
+/backend/output/*
+/backend/temp/*
+/backend/logs/*
+
 
 # Cookies (contains sensitive login data)
 *.cookies.txt
