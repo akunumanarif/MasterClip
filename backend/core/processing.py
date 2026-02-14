@@ -493,17 +493,46 @@ def auto_reframe(video_path: str, output_path: str, color_grading: str = 'none')
         height = int(video_stream['height'])
         fps = float(video_stream['r_frame_rate'].split('/')[0]) / float(video_stream['r_frame_rate'].split('/')[1])
         
-        # Target 9:16 dimensions
-        target_width = int(height * (9/16))
-        target_height = height
+        # Target 9:16 PORTRAIT dimensions
+        # For landscape source (e.g., 1920x1080), we need to:
+        # 1. Scale video so HEIGHT matches our target portrait height
+        # 2. Crop width to get 9:16 aspect ratio
+        
+        # Determine target dimensions based on source aspect ratio
+        source_aspect = width / height
+        
+        if source_aspect > 1:  # Landscape source (e.g., 16:9 = 1920x1080)
+            # For portrait output from landscape: use source WIDTH as target HEIGHT
+            target_height = width  # 1920px for Full HD landscape
+            target_width = int(target_height * (9/16))  # 1920 * 9/16 = 1080px
+            
+            # Calculate scaled dimensions (scale so height becomes target_height)
+            # Maintain aspect ratio: scale_factor = target_height / source_height
+            scale_factor = target_height / height  # 1920 / 1080 = 1.778
+            scaled_width = int(width * scale_factor)  # 1920 * 1.778 = 3413px
+            scaled_height = target_height  # 1920px
+            
+            print(f"Landscape→Portrait: Scale {width}x{height} to {scaled_width}x{scaled_height}, then crop to {target_width}x{target_height}")
+        else:  # Portrait or square source
+            # Already portrait, just crop to 9:16
+            target_width = int(height * (9/16))
+            target_height = height
+            scaled_width = width
+            scaled_height = height
+            print(f"Portrait source: Crop {width}x{height} to {target_width}x{target_height}")
         
         # STATIC CENTERED FACE CROP (no dynamic movement)
         print("Detecting face for centered stable crop...")
+        # Note: Face detection runs on ORIGINAL video dimensions
         tracking_data = detect_visual_interest_x(video_path)
         
         if not tracking_data or 'trajectory' not in tracking_data:
             print("Face detection failed - using center crop")
-            x = (width - target_width) // 2
+            # For landscape with scaling, center on scaled width
+            if source_aspect > 1:
+                x = (scaled_width - target_width) // 2
+            else:
+                x = (width - target_width) // 2
             y = 0
         else:
             trajectory = tracking_data['trajectory']
@@ -524,41 +553,40 @@ def auto_reframe(video_path: str, output_path: str, color_grading: str = 'none')
             # Use mean of trimmed positions for smoother centering
             face_center_x = int(sum(trimmed) / len(trimmed))
             
-            print(f"Face detected at weighted center X={face_center_x} (from {len(trimmed)} samples)")
-            print(f"  Video dimensions: {width}x{height}, target crop: {target_width}x{target_height}")
-            print(f"  Face avg width: {avg_face_width:.0f}px")
+            # For landscape sources with scaling, scale the face position too
+            if source_aspect > 1:
+                face_center_x_scaled = int(face_center_x * scale_factor)
+                print(f"Face detected at X={face_center_x} (original), scaled to X={face_center_x_scaled}")
+            else:
+                face_center_x_scaled = face_center_x
+                print(f"Face detected at weighted center X={face_center_x} (from {len(trimmed)} samples)")
             
-            # CRITICAL: Safety Margin - ensure crop wide enough for FULL HEAD (not just face)
-            # MediaPipe face detection only covers face (eyes to chin), not full head
-            # Use 2.5x multiplier to include ears, side of head, and some padding
-            if avg_face_width > 0:
-                required_width = int(avg_face_width * 2.5)  # 2.5x for full head + padding
-                print(f"  Required width for full head: {required_width}px (2.5x face width)")
-                if required_width > target_width:
-                    print(f"  ⚠ Adjusting crop width: {target_width} → {required_width}px for full head visibility")
-                    target_width = min(required_width, width)
+            print(f"  Target crop: {target_width}x{target_height}")
+            print(f"  Face avg width: {avg_face_width:.0f}px")
             
             # Calculate crop X to CENTER the face EXACTLY in the crop
             # Face center should be at crop_x + (crop_width / 2)
             # So: crop_x = face_center - (crop_width / 2)
             half_crop = target_width // 2
-            x = face_center_x - half_crop
+            x = face_center_x_scaled - half_crop
             
-            # SMART CLAMPING: if face is near edge, prioritize keeping face centered
-            # even if it means showing some edge
-            min_x = 0
-            max_x = width - target_width
+            # SMART CLAMPING: validate against SCALED dimensions for landscape
+            if source_aspect > 1:
+                min_x = 0
+                max_x = scaled_width - target_width
+            else:
+                min_x = 0
+                max_x = width - target_width
             
             if x < min_x:
                 # Face is too close to left edge
-                # Check how far the face would be from center if we clamp
-                clamped_face_pos_in_crop = face_center_x - min_x
+                clamped_face_pos_in_crop = face_center_x_scaled - min_x
                 offset_from_center = abs(clamped_face_pos_in_crop - half_crop)
                 print(f"  Face near left edge: would be {offset_from_center}px off-center")
                 x = min_x
             elif x > max_x:
                 # Face is too close to right edge
-                clamped_face_pos_in_crop = face_center_x - max_x
+                clamped_face_pos_in_crop = face_center_x_scaled - max_x
                 offset_from_center = abs(clamped_face_pos_in_crop - half_crop)
                 print(f"  Face near right edge: would be {offset_from_center}px off-center")
                 x = max_x
@@ -566,14 +594,23 @@ def auto_reframe(video_path: str, output_path: str, color_grading: str = 'none')
             y = 0
             
             # Verify centering
-            actual_face_in_crop = face_center_x - x
+            actual_face_in_crop = face_center_x_scaled - x
             offset = actual_face_in_crop - half_crop
-            print(f"STATIC crop: X={x}, face at {face_center_x}, in-crop position: {actual_face_in_crop}/{target_width} (offset: {offset:+d}px)")
+            print(f"STATIC crop: X={x}, face at {face_center_x_scaled}, in-crop position: {actual_face_in_crop}/{target_width} (offset: {offset:+d}px)")
         
-        # Apply STATIC crop (single position for entire video - NO SHIFTING!)
+        # Apply filters: Scale (if needed) → Crop → Color Grading
         input_stream = ffmpeg.input(video_path)
         audio = input_stream.audio
-        video = input_stream.video.filter('crop', target_width, target_height, x, y)
+        video = input_stream.video
+        
+        # For landscape sources, scale first before cropping
+        if source_aspect > 1:
+            print(f"Applying scale: {scaled_width}x{scaled_height}")
+            video = video.filter('scale', scaled_width, scaled_height)
+        
+        # Apply crop (on scaled video if landscape, original if portrait)
+        print(f"Applying crop: {target_width}x{target_height} at ({x}, {y})")
+        video = video.filter('crop', target_width, target_height, x, y)
         
         # Apply color grading if specified
         grading_filter = get_color_grading_filter(color_grading)
