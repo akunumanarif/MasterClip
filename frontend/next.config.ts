@@ -16,6 +16,10 @@ const nextConfig: NextConfig = {
         source: "/output/:path*",
         destination: `${backendUrl}/output/:path*`,
       },
+      {
+        source: "/clips/:path*",
+        destination: `${backendUrl}/clips/:path*`,
+      },
     ];
   },
 };

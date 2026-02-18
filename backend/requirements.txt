@@ -6,3 +6,7 @@ ffmpeg-python
 openai-whisper
 opencv-python-headless
 ultralytics
+Pillow
+requests
+deep-translator
+python-dotenv

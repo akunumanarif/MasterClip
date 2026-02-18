@@ -27,9 +27,15 @@ export default function Home() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("idle");
   const [statusMessage, setStatusMessage] = useState("");
-  const [outputFiles, setOutputFiles] = useState<string[]>([]);
+  const [outputFiles, setOutputFiles] = useState<Array<{ filename: string; url: string }>>([]);
+  const [emailSent, setEmailSent] = useState<boolean>(false);
   const [resolution, setResolution] = useState<string>("1080p");
   const [colorGrading, setColorGrading] = useState<string>("none");
+  const [quoteUrl, setQuoteUrl] = useState<string | null>(null);
+  const [isQuoteLoading, setIsQuoteLoading] = useState(false);
+  const [quoteLang, setQuoteLang] = useState<string>("en");
+  const [quoteCategory, setQuoteCategory] = useState<string>("life");
+  const [quoteFormat, setQuoteFormat] = useState<string>("image");
 
   // Extract YouTube ID for preview
   const getYoutubeId = (url: string) => {
@@ -53,8 +59,10 @@ export default function Home() {
             if (data.status === "completed") {
               setStatus("completed");
               setIsProcessing(false);
-              setOutputFiles(data.outputs || []); // Get list of files
-              toast.success("All videos generated successfully!");
+              setOutputFiles(data.outputs || []); // Get list of files with URLs
+              setEmailSent(data.email_sent || false);
+              const emailMsg = data.email_sent ? " Check your email for download links!" : "";
+              toast.success(`All videos generated successfully!${emailMsg}`);
               clearInterval(interval);
             } else if (data.status === "error") {
               setStatus("error");
@@ -136,6 +144,7 @@ export default function Home() {
     setStatusMessage("Starting...");
     setProjectId(null);
     setOutputFiles([]);
+    setEmailSent(false);
 
     try {
       // Map segments to backend format
@@ -161,6 +170,26 @@ export default function Home() {
       setIsProcessing(false);
       setStatus("idle");
       toast.error("Failed to start processing.");
+    }
+  };
+
+  const handleGenerateQuote = async () => {
+    setIsQuoteLoading(true);
+    try {
+      const res = await axios.post("/api/generate-quote", {
+        language: quoteLang,
+        category: quoteCategory,
+        format: quoteFormat
+      });
+      if (res.data.url) {
+        setQuoteUrl(res.data.url);
+        toast.success("Quote generated!");
+      }
+    } catch (e) {
+      toast.error("Failed to generate quote");
+      console.error(e);
+    } finally {
+      setIsQuoteLoading(false);
     }
   };
 
@@ -397,6 +426,110 @@ export default function Home() {
           </button>
         </div>
 
+        {/* Quote Generator Card */}
+        <div className="bg-card border border-border rounded-xl p-6 shadow-2xl shadow-primary/5 space-y-4">
+          <h2 className="text-xl font-semibold flex items-center gap-2">
+            <span>✨</span> Motivational Quote Card
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Generate a random motivational quote with a beautiful background for your social media.
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium ml-1">Format</label>
+              <div className="flex bg-secondary/50 p-1 rounded-lg border border-border">
+                <button
+                  onClick={() => setQuoteFormat("image")}
+                  className={cn(
+                    "flex-1 py-1.5 text-sm font-medium rounded-md transition-all",
+                    quoteFormat === "image" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  Image
+                </button>
+                <button
+                  onClick={() => setQuoteFormat("video")}
+                  className={cn(
+                    "flex-1 py-1.5 text-sm font-medium rounded-md transition-all",
+                    quoteFormat === "video" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  Video
+                </button>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium ml-1">Language</label>
+              <select
+                value={quoteLang}
+                onChange={(e) => setQuoteLang(e.target.value)}
+                className="w-full bg-secondary/50 border border-border rounded-lg py-2 px-3 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm"
+              >
+                <option value="en">English</option>
+                <option value="id">Bahasa Indonesia</option>
+              </select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium ml-1">Category</label>
+              <select
+                value={quoteCategory}
+                onChange={(e) => setQuoteCategory(e.target.value)}
+                className="w-full bg-secondary/50 border border-border rounded-lg py-2 px-3 focus:outline-none focus:ring-2 focus:ring-primary/50 text-sm"
+              >
+                <option value="life">Life / Motivation</option>
+                <option value="islamic">Islamic</option>
+                <option value="finance">Finance / Business</option>
+                <option value="others">Success / Others</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex flex-col md:flex-row gap-6 items-start">
+            <button
+              onClick={handleGenerateQuote}
+              disabled={isQuoteLoading}
+              className={cn(
+                "md:w-1/3 w-full py-3 rounded-lg font-medium transition-all flex items-center justify-center gap-2 border",
+                isQuoteLoading
+                  ? "bg-secondary text-muted-foreground cursor-not-allowed"
+                  : "bg-secondary/30 hover:bg-secondary text-foreground border-border hover:border-primary/50"
+              )}
+            >
+              {isQuoteLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Generating...
+                </>
+              ) : (
+                <>
+                  <Plus className="w-4 h-4" />
+                  Generate Quote {quoteFormat === "video" ? "Video" : "Image"}
+                </>
+              )}
+            </button>
+
+            {quoteUrl && (
+              <div className="md:w-2/3 w-full animate-in fade-in slide-in-from-right-4 duration-500">
+                <div className="relative aspect-[9/16] md:aspect-square rounded-lg overflow-hidden border border-border bg-black/50 shadow-lg max-h-[400px] flex items-center justify-center">
+                  {quoteUrl.endsWith(".mp4") ? (
+                    <video src={quoteUrl} controls autoPlay loop className="max-h-full max-w-full object-contain" />
+                  ) : (
+                    <img src={quoteUrl} alt="Generated Quote" className="w-full h-full object-cover" />
+                  )}
+                </div>
+                <a
+                  href={quoteUrl}
+                  download
+                  className="mt-2 text-sm text-primary hover:underline flex items-center gap-1 justify-end"
+                >
+                  <Video className="w-3 h-3" /> Download {quoteFormat === "video" ? "Video" : "Image"}
+                </a>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* Results Area */}
         <div className="space-y-4">
           {projectId && (
@@ -411,6 +544,15 @@ export default function Home() {
                         Completed
                       </div>
                       <h3 className="text-2xl font-bold">Your Shorts are Ready!</h3>
+                      {emailSent && (
+                        <p className="text-sm text-muted-foreground mt-2 flex items-center justify-center md:justify-start gap-2">
+                          <span>📧</span>
+                          Download links have been sent to your email!
+                        </p>
+                      )}
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Project ID: <code className="bg-secondary/50 px-2 py-0.5 rounded font-mono">{projectId}</code>
+                      </p>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -419,14 +561,14 @@ export default function Home() {
                           <p className="font-medium text-sm text-center">Clip {idx + 1}</p>
                           <div className="relative w-full aspect-[9/16] bg-black rounded-lg overflow-hidden border border-border shadow-lg ring-1 ring-white/10">
                             <video
-                              src={`/output/${file}`}
+                              src={file.url}
                               controls
                               className="w-full h-full object-cover"
                               poster="/placeholder-video.png"
                             />
                           </div>
                           <a
-                            href={`/output/${file}`}
+                            href={file.url}
                             download
                             className="flex items-center justify-center gap-2 w-full py-2 rounded-lg bg-foreground text-background text-sm font-semibold hover:bg-foreground/90 transition-colors"
                           >
