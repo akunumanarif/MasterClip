@@ -3,6 +3,16 @@ import ffmpeg
 from clipsai import Transcriber, ClipFinder, resize, MediaEditor
 from core.processing import get_color_grading_filter
 
+# Patch WhisperX to support Indonesian alignment
+try:
+    import whisperx.alignment as _wa
+    if "id" not in _wa.DEFAULT_ALIGN_MODELS_TORCH:
+        _wa.DEFAULT_ALIGN_MODELS_TORCH["id"] = "indonesian-nlp/wav2vec2-large-xlsr-indonesian"
+    if "id" not in _wa.DEFAULT_ALIGN_MODELS_HF:
+        _wa.DEFAULT_ALIGN_MODELS_HF["id"] = "indonesian-nlp/wav2vec2-large-xlsr-indonesian"
+except Exception:
+    pass
+
 
 def auto_detect_clips(video_path: str) -> list:
     """
