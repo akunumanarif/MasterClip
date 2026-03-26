@@ -19,7 +19,10 @@ export default function Home() {
     { id: "1", start: "00:00:10", end: "00:00:30" }
   ]);
 
-  // Input mode: 'manual' or 'bulk'
+  // Clip mode: 'auto' (ClipsAI auto-detect) or 'manual' (user provides timestamps)
+  const [clipMode, setClipMode] = useState<'auto' | 'manual'>('auto');
+
+  // Input mode: 'manual' or 'bulk' (only used when clipMode === 'manual')
   const [inputMode, setInputMode] = useState<'manual' | 'bulk'>('manual');
   const [bulkText, setBulkText] = useState("");
 
@@ -147,14 +150,13 @@ export default function Home() {
     setEmailSent(false);
 
     try {
-      // Map segments to backend format
-      const payloadSegments = segments.map(s => ({
-        start_time: s.start,
-        end_time: s.end
-      }));
+      const payloadSegments = clipMode === 'manual'
+        ? segments.map(s => ({ start_time: s.start, end_time: s.end }))
+        : [];
 
       const response = await axios.post("/api/process", {
         youtube_url: url,
+        mode: clipMode,
         segments: payloadSegments,
         project_name: "My Short",
         resolution: resolution,
@@ -266,6 +268,40 @@ export default function Home() {
           </div>
 
 
+          {/* Clip Mode Toggle */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium ml-1">Clip Mode</label>
+            <div className="flex bg-secondary/50 p-1 rounded-lg border border-border">
+              <button
+                onClick={() => setClipMode('auto')}
+                className={cn(
+                  "flex-1 py-2 text-sm font-medium rounded-md transition-all",
+                  clipMode === 'auto'
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Auto (ClipsAI)
+              </button>
+              <button
+                onClick={() => setClipMode('manual')}
+                className={cn(
+                  "flex-1 py-2 text-sm font-medium rounded-md transition-all",
+                  clipMode === 'manual'
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+              >
+                Manual Timestamps
+              </button>
+            </div>
+            {clipMode === 'auto' && (
+              <p className="text-xs text-muted-foreground ml-1">
+                ClipsAI will automatically transcribe the video and detect the best clips — no timestamps needed.
+              </p>
+            )}
+          </div>
+
           {videoId && (
             <div className="relative aspect-video rounded-lg overflow-hidden border border-border bg-black/50 animate-in fade-in zoom-in duration-300">
               <iframe
@@ -280,10 +316,11 @@ export default function Home() {
             </div>
           )}
 
+          {clipMode === 'manual' && (
           <div className="space-y-4">
-            {/* Mode Toggle */}
+            {/* Timestamp Input Mode Toggle */}
             <div className="flex items-center justify-between">
-              <label className="text-sm font-medium ml-1">Clips to Generate</label>
+              <label className="text-sm font-medium ml-1">Timestamps</label>
               <div className="flex gap-2">
                 <button
                   onClick={() => setInputMode('manual')}
@@ -401,6 +438,7 @@ export default function Home() {
               </div>
             )}
           </div>
+          )}
 
           <button
             onClick={handleGenerate}
@@ -420,7 +458,9 @@ export default function Home() {
             ) : (
               <>
                 <Play className="w-5 h-5 fill-current" />
-                Generate {segments.length > 1 ? `${segments.length} Shorts` : 'Short'}
+                {clipMode === 'auto'
+                  ? 'Auto Generate Shorts'
+                  : `Generate ${segments.length > 1 ? `${segments.length} Shorts` : 'Short'}`}
               </>
             )}
           </button>

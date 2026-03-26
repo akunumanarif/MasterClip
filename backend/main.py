@@ -8,7 +8,8 @@ import shutil
 import ffmpeg
 from datetime import datetime
 from core.downloader import download_youtube_video
-from core.processing import extract_highlight, auto_reframe
+from core.processing import extract_highlight
+from core.clipsai_processor import auto_detect_clips, reframe_clip_clipsai
 from core.transcription import generate_dynamic_subtitles
 from core.email_service import email_service
 
@@ -39,11 +40,13 @@ class ClipSegment(BaseModel):
 
 class ProcessRequest(BaseModel):
     youtube_url: str
-    segments: List[ClipSegment]
+    segments: List[ClipSegment] = []  # Optional: only needed for manual mode
+    mode: str = "auto"  # "auto" | "manual"
     project_name: str = "Untitled"
     resolution: str = "1080p" # Default to High Quality
     cookies_file: Optional[str] = None # Optional: Path to YouTube cookies file
     color_grading: str = "none" # Color grading preset
+    pyannote_auth_token: Optional[str] = None  # HuggingFace token (falls back to env)
 
 def update_status(project_id: str, status: str, message: str = ""):
     project_status[project_id] = {"status": status, "message": message}
@@ -71,24 +74,37 @@ def process_pipeline(request: ProcessRequest, project_id: str):
             request.cookies_file
         )
         
+        # Get Pyannote token (request param overrides env)
+        pyannote_token = request.pyannote_auth_token or os.getenv("PYANNOTE_AUTH_TOKEN", "")
+
+        # Determine clip time ranges
+        if request.mode == "auto":
+            update_status(project_id, "processing", "Auto-detecting clips with ClipsAI...")
+            clip_times = auto_detect_clips(video_path)
+            if not clip_times:
+                raise ValueError("ClipsAI found no clips in this video. Try manual mode.")
+        else:
+            # Manual mode: use provided segments (HH:MM:SS strings passed directly to FFmpeg)
+            clip_times = [(seg.start_time, seg.end_time) for seg in request.segments]
+
         output_files = []
-        total_clips = len(request.segments)
-        
-        for i, segment in enumerate(request.segments):
+        total_clips = len(clip_times)
+
+        for i, (start_time, end_time) in enumerate(clip_times):
             clip_num = i + 1
             clip_id = f"{project_id}_clip{clip_num}"
-            
+
             update_status(project_id, "processing", f"Processing Clip {clip_num}/{total_clips}: Cutting...")
-            
+
             # 2. Extract Highlight
             cut_path = os.path.join(TEMP_DIR, f"{clip_id}_cut.mp4")
-            extract_highlight(video_path, segment.start_time, segment.end_time, cut_path)
-            
-            update_status(project_id, "processing", f"Processing Clip {clip_num}/{total_clips}: Reframing (Face Detection)...")
-            
-            # 3. Auto Reframe (9:16) with Color Grading - temporary location
+            extract_highlight(video_path, start_time, end_time, cut_path)
+
+            update_status(project_id, "processing", f"Processing Clip {clip_num}/{total_clips}: Reframing (ClipsAI speaker tracking)...")
+
+            # 3. Reframe to 9:16 using ClipsAI (speaker-tracking via Pyannote)
             reframed_temp_path = os.path.join(TEMP_DIR, f"{clip_id}_9_16.mp4")
-            auto_reframe(cut_path, reframed_temp_path, color_grading=request.color_grading)
+            reframe_clip_clipsai(cut_path, reframed_temp_path, pyannote_token, color_grading=request.color_grading)
             
             update_status(project_id, "processing", f"Processing Clip {clip_num}/{total_clips}: Generating subtitles...")
             

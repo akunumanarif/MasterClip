@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libgl1 \
     gcc \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache

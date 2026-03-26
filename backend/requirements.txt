@@ -10,3 +10,6 @@ Pillow
 requests
 deep-translator
 python-dotenv
+clipsai
+whisperx @ git+https://github.com/m-bain/whisperx.git
+scipy
