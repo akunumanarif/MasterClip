@@ -1,5 +1,20 @@
 import os
 import ffmpeg
+
+# Patch Pyannote Pipeline: newer pyannote.audio removed 'use_auth_token', replaced by 'token'
+try:
+    from pyannote.audio import Pipeline as _PyannotePipeline
+    _orig_from_pretrained = _PyannotePipeline.__dict__['from_pretrained'].__func__
+
+    def _patched_from_pretrained(cls, *args, **kwargs):
+        if "use_auth_token" in kwargs:
+            kwargs["token"] = kwargs.pop("use_auth_token")
+        return _orig_from_pretrained(cls, *args, **kwargs)
+
+    _PyannotePipeline.from_pretrained = classmethod(_patched_from_pretrained)
+except Exception:
+    pass
+
 from clipsai import Transcriber, ClipFinder, resize, MediaEditor
 from core.processing import get_color_grading_filter
 
