@@ -619,13 +619,26 @@ export default function Home() {
                       ))}
                     </div>
                   </div>
+                ) : status === 'error' ? (
+                  <div className="flex flex-col items-center justify-center py-12 space-y-6 text-center">
+                    <div className="w-16 h-16 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center">
+                      <span className="text-3xl">✕</span>
+                    </div>
+                    <div className="space-y-2 max-w-sm mx-auto">
+                      <p className="font-semibold text-xl text-red-400">Processing Failed</p>
+                      <p className="text-sm text-muted-foreground">{statusMessage || "An unexpected error occurred."}</p>
+                    </div>
+                    <button
+                      onClick={() => { setStatus("idle"); setProjectId(null); setStatusMessage(""); }}
+                      className="px-6 py-2.5 rounded-lg bg-primary text-primary-foreground font-medium hover:bg-primary/90 transition-colors"
+                    >
+                      Try Again
+                    </button>
+                  </div>
                 ) : (
                   <div className="flex flex-col items-center justify-center py-12 space-y-6 text-center">
                     <div className="relative">
                       <div className="w-20 h-20 border-4 border-primary/20 border-t-primary rounded-full animate-spin"></div>
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <span className="text-xs font-bold text-primary">{Math.round((Date.now() % 3000) / 30)}%</span>
-                      </div>
                     </div>
                     <div className="space-y-2 max-w-sm mx-auto">
                       <p className="font-medium text-xl animate-pulse">{statusMessage || "Initializing..."}</p>
