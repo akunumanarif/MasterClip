@@ -24,10 +24,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Remove torchcodec — requires CUDA (libnvrtc) which is unavailable in CPU-only containers.
-# pyannote.audio will fall back to soundfile for audio loading.
-RUN pip uninstall torchcodec -y || true
-
 # Copy the rest of the application code
 COPY . .
 
