@@ -7,6 +7,9 @@ import uuid
 import shutil
 import ffmpeg
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 from core.downloader import download_youtube_video
 from core.processing import extract_highlight
 from core.clipsai_processor import auto_detect_clips, reframe_clip_clipsai

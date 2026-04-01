@@ -16,6 +16,7 @@ services:
       - SMTP_PASSWORD=${SMTP_PASSWORD}
       - RECIPIENT_EMAIL=${RECIPIENT_EMAIL:-numanarif.videos@gmail.com}
       - BASE_URL=${BASE_URL:-http://136.110.35.155:8080}
+      - PYANNOTE_AUTH_TOKEN=${PYANNOTE_AUTH_TOKEN}
     restart: always
 
   frontend:

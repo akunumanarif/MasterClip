@@ -11,5 +11,6 @@ requests
 deep-translator
 python-dotenv
 clipsai
+torchcodec>=0.3
 whisperx @ git+https://github.com/m-bain/whisperx.git
 scipy
