@@ -8,7 +8,6 @@ yt-dlp
 ffmpeg-python
 openai-whisper
 opencv-python-headless
-mediapipe
 Pillow
 requests
 deep-translator
