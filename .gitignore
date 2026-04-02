@@ -27,3 +27,14 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+.env
+EMAIL_SETUP.md
+backend/.env
+backend/.env.example
+backend/test_email_config.py
+backend/test_image_gen_lang.py
+backend/test_image_gen_manual.py
+backend/test_quote_finance_en.png
+backend/test_quote_id_islamic.png
+backend/test_quote.png
+backend/test_video_gen_manual.py
