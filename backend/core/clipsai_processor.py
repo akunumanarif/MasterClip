@@ -1,6 +1,17 @@
 import os
 import ffmpeg
 
+# Patch DiarizeOutput: pyannote.audio 4.x wraps result in DiarizeOutput dataclass,
+# but ClipsAI expects the old Annotation object with .itertracks() directly.
+try:
+    from pyannote.audio.pipelines.speaker_diarization import DiarizeOutput
+    if not hasattr(DiarizeOutput, 'itertracks'):
+        def _itertracks(self, yield_label=False):
+            return self.speaker_diarization.itertracks(yield_label=yield_label)
+        DiarizeOutput.itertracks = _itertracks
+except Exception:
+    pass
+
 # Patch Pyannote Pipeline: newer pyannote.audio removed 'use_auth_token', replaced by 'token'
 try:
     from pyannote.audio import Pipeline as _PyannotePipeline

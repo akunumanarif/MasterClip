@@ -27,3 +27,9 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
+
+test_*
+DEPLOYMENT.md
+EMAIL_SETUP.md
+.env
+.env.example
