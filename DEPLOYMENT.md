@@ -12,11 +12,11 @@ You need properly installed Python, Node.js, FFmpeg, and some specific libraries
 ### 1. Install System Dependencies
 
 #### Option A: Docker (Recommended - Easiest)
-You only need Docker and Docker Compose.
+You only need Docker and Docker Compose (V2).
 ```bash
 # Install Docker
 sudo apt update
-sudo apt install -y docker.io docker-compose
+sudo apt install -y docker.io docker-compose-plugin
 sudo usermod -aG docker $USER
 newgrp docker
 ```
@@ -41,17 +41,29 @@ sudo apt install -y nodejs ffmpeg python3 python3-pip python3-venv libsm6 libxex
 1.  **Build and Run:**
     From the root of the project (where `docker-compose.yml` is):
     ```bash
-    docker-compose up -d --build
+    docker compose up -d --build
     ```
 
 2.  **View Logs:**
     ```bash
-    docker-compose logs -f
+    docker compose logs -f
+    ```
+
+    **Specific Logs:**
+    ```bash
+    # Backend only
+    docker compose logs -f backend
+
+    # Frontend only
+    docker compose logs -f frontend
+
+    # Last 100 lines
+    docker compose logs -f --tail=100
     ```
 
 3.  **Stop:**
     ```bash
-    docker-compose down
+    docker compose down
     ```
 
 ### Method 2: Manual Setup (Legacy)

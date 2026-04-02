@@ -29,7 +29,8 @@ node_modules/
 Thumbs.db
 
 test_*
-DEPLOYMENT.md
+DEPLOYMENT.md 
 EMAIL_SETUP.md
 .env
 .env.example
+DEPLOYMENT.md
