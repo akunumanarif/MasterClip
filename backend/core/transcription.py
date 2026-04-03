@@ -1,5 +1,7 @@
 import whisper
 import os
+import subprocess
+import tempfile
 import datetime
 
 def format_timestamp(seconds: float):
@@ -18,10 +20,21 @@ def generate_dynamic_subtitles(video_path: str, model_size: str = "small"):
     Transcribes video using Whisper and generates an ASS file with word-level highlighting (Karaoke).
     Returns the path to the ASS file.
     """
-    # Force CPU to use FP32 if needed, or suppress warning.
-    # Changing model to 'small' for better accuracy than 'base'.
     model = whisper.load_model(model_size)
-    result = model.transcribe(video_path, word_timestamps=True)
+
+    # Extract audio to a temp WAV file first — avoids ffmpeg pipe issues on Linux
+    tmp_wav = video_path + "_sub_audio.wav"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", video_path, "-ac", "1", "-ar", "16000", "-vn", tmp_wav],
+            capture_output=True, check=True
+        )
+        result = model.transcribe(tmp_wav, word_timestamps=True)
+    finally:
+        try:
+            os.remove(tmp_wav)
+        except Exception:
+            pass
     
     ass_path = os.path.splitext(video_path)[0] + ".ass"
     
