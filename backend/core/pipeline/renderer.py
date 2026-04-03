@@ -1,7 +1,7 @@
 import cv2
 import subprocess
 import os
-import tempfile
+import numpy as np
 from typing import List, Dict, Tuple
 from core.pipeline.config import (
     OUTPUT_RESOLUTION, VIDEO_CRF, VIDEO_PRESET, VIDEO_CODEC,
