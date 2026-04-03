@@ -5,6 +5,7 @@ from typing import Optional, List
 import os
 import uuid
 import shutil
+import subprocess
 import ffmpeg
 from datetime import datetime
 from dotenv import load_dotenv
@@ -193,33 +194,33 @@ def generate_pipeline(project_id: str, selected_indices: List[int]):
             # Generate subtitles
             ass_path = generate_dynamic_subtitles(reframed_path)
 
-            # Burn subtitles
+            # Burn subtitles using subprocess for proper error reporting
             final_filename = f"{project_id}_clip{clip_num}_final.mp4"
             final_path = os.path.join(project_dir, final_filename)
-            ass_path_fwd = ass_path.replace("\\", "/")
 
-            input_stream = ffmpeg.input(reframed_path)
-            video_stream = input_stream.video.filter("ass", ass_path_fwd)
-            audio_stream = input_stream.audio
+            # Escape colons in path for ffmpeg filter (needed on all platforms)
+            # ffmpeg ass filter uses filter-graph syntax where : is a separator
+            ass_path_escaped = ass_path.replace("\\", "/").replace(":", "\\:")
 
-            (
-                ffmpeg
-                .output(
-                    video_stream, audio_stream, final_path,
-                    vcodec="libx264",
-                    acodec="aac",
-                    **{
-                        "crf": 18,
-                        "preset": "slow",
-                        "profile:v": "high",
-                        "pix_fmt": "yuv420p",
-                        "movflags": "+faststart",
-                        "b:a": "192k",
-                    }
-                )
-                .overwrite_output()
-                .run(capture_stdout=True, capture_stderr=True)
-            )
+            subtitle_cmd = [
+                "ffmpeg", "-y",
+                "-i", reframed_path,
+                "-vf", f"ass={ass_path_escaped}",
+                "-c:v", "libx264",
+                "-crf", "18",
+                "-preset", "slow",
+                "-profile:v", "high",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                final_path
+            ]
+            print(f"    Burning subtitles: {' '.join(subtitle_cmd)}")
+            sub_result = subprocess.run(subtitle_cmd, capture_output=True, text=True)
+            if sub_result.returncode != 0:
+                print(f"    FFmpeg subtitle stderr:\n{sub_result.stderr[-3000:]}")
+                raise RuntimeError(f"Subtitle burn failed: {sub_result.stderr[-500:]}")
 
             output_files.append({
                 "filename": final_filename,
