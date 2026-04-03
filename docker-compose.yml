@@ -9,6 +9,7 @@ services:
       - ./backend/output:/app/output
       - ./backend/temp:/app/temp
       - ./backend/clips:/app/clips
+      - ./backend/youtube_cookies.txt:/app/youtube_cookies.txt:ro
     environment:
       - SMTP_HOST=smtp.gmail.com
       - SMTP_PORT=587
