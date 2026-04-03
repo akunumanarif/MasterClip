@@ -79,18 +79,40 @@ def _render_frames(
     output_path: str,
     color_grading: str
 ):
-    """Read frames with OpenCV, apply crop, pipe to FFmpeg."""
-    ffmpeg_cmd = [
+    """
+    Decode frames via ffmpeg pipe (handles AV1, HEVC, any codec),
+    apply per-frame crop in Python, encode output via ffmpeg.
+    """
+    # --- Decoder: ffmpeg → raw BGR frames ---
+    decode_cmd = [
+        "ffmpeg",
+        "-ss", str(clip_start),
+        "-to", str(clip_end),
+        "-i", video_path,
+        "-f", "rawvideo",
+        "-pix_fmt", "bgr24",
+        "-an",          # no audio on decode side
+        "-"             # output to stdout
+    ]
+    decoder = subprocess.Popen(
+        decode_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL
+    )
+
+    # --- Encoder: raw BGR frames → output file ---
+    vf = _get_color_filter(color_grading)
+    encode_cmd = [
         "ffmpeg", "-y",
         "-f", "rawvideo",
         "-vcodec", "rawvideo",
         "-s", f"{out_w}x{out_h}",
         "-pix_fmt", "bgr24",
         "-r", str(fps),
-        "-i", "pipe:0",
+        "-i", "pipe:0",          # video from stdin
         "-ss", str(clip_start),
         "-to", str(clip_end),
-        "-i", audio_path,
+        "-i", audio_path,        # audio from file
         "-c:v", VIDEO_CODEC,
         "-crf", str(VIDEO_CRF),
         "-preset", VIDEO_PRESET,
@@ -102,51 +124,58 @@ def _render_frames(
         "-movflags", "+faststart",
         "-pix_fmt", "yuv420p",
     ]
-
-    # Add color grading filter if specified
-    vf = _get_color_filter(color_grading)
     if vf:
-        ffmpeg_cmd += ["-vf", vf]
+        encode_cmd += ["-vf", vf]
+    encode_cmd.append(output_path)
 
-    ffmpeg_cmd.append(output_path)
+    encoder = subprocess.Popen(
+        encode_cmd,
+        stdin=subprocess.PIPE,
+        stderr=subprocess.DEVNULL
+    )
 
-    proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-
-    cap = cv2.VideoCapture(video_path)
-    start_frame = int(clip_start * fps)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
+    frame_size = frame_w * frame_h * 3  # BGR24
     frame_count = 0
-    while frame_count < len(crops):
-        ret, frame = cap.read()
-        if not ret:
-            break
+    total_frames = len(crops)
 
-        crop = crops[frame_count]
-        x, y, w, h = crop["x"], crop["y"], crop["w"], crop["h"]
-
-        # Safety clamp
-        x = max(0, min(x, frame_w - 1))
-        y = max(0, min(y, frame_h - 1))
-        w = max(1, min(w, frame_w - x))
-        h = max(1, min(h, frame_h - y))
-
-        cropped = frame[y:y+h, x:x+w]
-        resized = cv2.resize(cropped, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
-
-        try:
-            proc.stdin.write(resized.tobytes())
-        except BrokenPipeError:
-            break
-
-        frame_count += 1
-
-    cap.release()
     try:
-        proc.stdin.close()
-    except Exception:
-        pass
-    proc.wait()
+        while frame_count < total_frames:
+            raw = decoder.stdout.read(frame_size)
+            if len(raw) < frame_size:
+                break  # end of stream
+
+            frame = np.frombuffer(raw, dtype=np.uint8).reshape((frame_h, frame_w, 3))
+
+            if frame_count < len(crops):
+                crop = crops[frame_count]
+                x = max(0, min(int(crop["x"]), frame_w - 1))
+                y = max(0, min(int(crop["y"]), frame_h - 1))
+                w = max(1, min(int(crop["w"]), frame_w - x))
+                h = max(1, min(int(crop["h"]), frame_h - y))
+            else:
+                # fallback: center crop
+                x, y, w, h = 0, 0, frame_w, frame_h
+
+            cropped = frame[y:y+h, x:x+w]
+            resized = cv2.resize(cropped, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+
+            try:
+                encoder.stdin.write(resized.tobytes())
+            except BrokenPipeError:
+                break
+
+            frame_count += 1
+
+    finally:
+        decoder.stdout.close()
+        decoder.wait()
+        try:
+            encoder.stdin.close()
+        except Exception:
+            pass
+        encoder.wait()
+
+    print(f"    Rendered {frame_count} frames")
 
 
 def _get_color_filter(preset: str) -> str:

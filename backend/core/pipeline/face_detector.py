@@ -1,6 +1,8 @@
 from typing import List, Dict, Tuple
 import cv2
 import numpy as np
+import subprocess
+import json
 from core.pipeline.config import FACE_SAMPLE_EVERY_N_FRAMES, FACE_CONFIDENCE_THRESHOLD
 
 _detector = None
@@ -23,7 +25,8 @@ def detect_faces_in_clip(
     clip_end: float
 ) -> List[Dict]:
     """
-    Detect faces in a clip segment using OpenCV Haar cascade, sampling every N frames.
+    Detect faces in a clip segment via ffmpeg-decoded frames (supports AV1/HEVC/any codec),
+    sampling every N frames using Haar cascade.
 
     Returns list of:
         {
@@ -32,68 +35,102 @@ def detect_faces_in_clip(
             "faces": [{"x": int, "y": int, "w": int, "h": int, "confidence": float}]
         }
     """
-    cap = cv2.VideoCapture(video_path)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frame_w, frame_h, fps = get_video_info(video_path)
+    frame_size = frame_w * frame_h * 3  # BGR24
 
-    start_frame = int(clip_start * fps)
-    end_frame = int(clip_end * fps)
-
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    # Decode clip via ffmpeg — handles all codecs
+    decode_cmd = [
+        "ffmpeg",
+        "-ss", str(clip_start),
+        "-to", str(clip_end),
+        "-i", video_path,
+        "-f", "rawvideo",
+        "-pix_fmt", "bgr24",
+        "-an",
+        "-"
+    ]
+    decoder = subprocess.Popen(
+        decode_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL
+    )
 
     detector = _get_detector()
     results = []
-    frame_idx = start_frame
+    frame_idx = 0
 
-    while frame_idx <= end_frame:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    try:
+        while True:
+            raw = decoder.stdout.read(frame_size)
+            if len(raw) < frame_size:
+                break
 
-        if (frame_idx - start_frame) % FACE_SAMPLE_EVERY_N_FRAMES == 0:
-            timestamp = frame_idx / fps
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            if frame_idx % FACE_SAMPLE_EVERY_N_FRAMES == 0:
+                timestamp = clip_start + frame_idx / fps
+                frame = np.frombuffer(raw, dtype=np.uint8).reshape((frame_h, frame_w, 3))
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            # scaleFactor=1.1, minNeighbors=5 — balanced speed/accuracy
-            detections = detector.detectMultiScale(
-                gray,
-                scaleFactor=1.1,
-                minNeighbors=5,
-                minSize=(60, 60),
-                flags=cv2.CASCADE_SCALE_IMAGE
-            )
+                detections = detector.detectMultiScale(
+                    gray,
+                    scaleFactor=1.1,
+                    minNeighbors=5,
+                    minSize=(60, 60),
+                    flags=cv2.CASCADE_SCALE_IMAGE
+                )
 
-            faces = []
-            if len(detections) > 0:
-                for (x, y, w, h) in detections:
-                    # Clamp to frame bounds
-                    x = max(0, int(x))
-                    y = max(0, int(y))
-                    w = min(int(w), frame_w - x)
-                    h = min(int(h), frame_h - y)
-                    faces.append({
-                        "x": x, "y": y, "w": w, "h": h,
-                        "confidence": 1.0  # Haar cascade doesn't provide per-detection scores
-                    })
+                faces = []
+                if len(detections) > 0:
+                    for (x, y, w, h) in detections:
+                        x = max(0, int(x))
+                        y = max(0, int(y))
+                        w = min(int(w), frame_w - x)
+                        h = min(int(h), frame_h - y)
+                        faces.append({
+                            "x": x, "y": y, "w": w, "h": h,
+                            "confidence": 1.0
+                        })
 
-            results.append({
-                "timestamp": round(timestamp, 3),
-                "frame_idx": frame_idx,
-                "faces": faces
-            })
+                results.append({
+                    "timestamp": round(timestamp, 3),
+                    "frame_idx": frame_idx,
+                    "faces": faces
+                })
 
-        frame_idx += 1
+            frame_idx += 1
+    finally:
+        decoder.stdout.close()
+        decoder.wait()
 
-    cap.release()
     return results
 
 
 def get_video_info(video_path: str) -> Tuple[int, int, float]:
-    """Returns (width, height, fps)."""
-    cap = cv2.VideoCapture(video_path)
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    cap.release()
-    return w, h, fps
+    """Returns (width, height, fps) using ffprobe — works for all codecs including AV1."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "quiet",
+                "-print_format", "json",
+                "-show_streams",
+                "-select_streams", "v:0",
+                video_path
+            ],
+            capture_output=True, text=True, check=True
+        )
+        info = json.loads(result.stdout)
+        stream = info["streams"][0]
+        w = int(stream["width"])
+        h = int(stream["height"])
+        # fps can be "30000/1001" format
+        fps_raw = stream.get("r_frame_rate", "30/1")
+        num, den = fps_raw.split("/")
+        fps = float(num) / float(den)
+        return w, h, fps
+    except Exception as e:
+        print(f"  ffprobe failed ({e}), falling back to OpenCV")
+        cap = cv2.VideoCapture(video_path)
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        cap.release()
+        return w, h, fps
