@@ -18,6 +18,8 @@ RUN apt-get update && apt-get install -y \
     libass9 \
     libass-dev \
     fonts-liberation \
+    libdav1d-dev \
+    libaom-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache
