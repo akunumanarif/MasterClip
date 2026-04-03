@@ -32,7 +32,15 @@ def download_youtube_video(url: str, output_dir: str = "temp", resolution: str =
     # Note: Some videos don't have separate video/audio streams at specific heights,
     # so we must have a simple 'best' fallback
     
-    format_str = f'bestvideo[height<={target_height}]+bestaudio/bestvideo+bestaudio/best'
+    # Prefer h264/vp9 — avoid AV1 (av01) which requires libaom not available in slim Docker images
+    format_str = (
+        f'bestvideo[height<={target_height}][vcodec^=avc]+bestaudio[acodec^=mp4a]/'
+        f'bestvideo[height<={target_height}][vcodec^=avc]+bestaudio/'
+        f'bestvideo[height<={target_height}][vcodec^=vp9]+bestaudio/'
+        f'bestvideo[height<={target_height}][vcodec!^=av01]+bestaudio/'
+        f'bestvideo[height<={target_height}]+bestaudio/'
+        f'best[vcodec!^=av01]/best'
+    )
     
     print(f"📥 Downloading with format: {format_str}")
     
