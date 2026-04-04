@@ -10,6 +10,9 @@
 *.cookies.txt
 **/youtube_cookies.txt
 
+# Google service account credentials
+backend/credentials/
+
 # Python
 __pycache__/
 *.py[cod]

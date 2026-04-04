@@ -1,14 +1,17 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List
 import os
 import uuid
+import asyncio
 import shutil
 import subprocess
 import ffmpeg
 from datetime import datetime
 from dotenv import load_dotenv
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 load_dotenv()
 
@@ -21,8 +24,109 @@ from core.pipeline.diarizer import diarize
 from core.pipeline.segment_merger import merge as merge_segments
 from core.pipeline.highlight_detector import detect_highlights
 from core.pipeline.renderer import render_clip
+from core.sheets_service import SheetsService
 
-app = FastAPI(title="AI Video Shorts Generator API")
+# ─────────────────────────────────────────────
+# Google Sheets + Scheduler setup
+# ─────────────────────────────────────────────
+
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "1LjiJ-LAOXX3MKiarUSAmRS7BKeUlsglSiiBDXU24C-I")
+CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials/google_sheets_credentials.json")
+CRON_INTERVAL_MINUTES = int(os.getenv("CRON_INTERVAL_MINUTES", "15"))
+
+_sheets_service: Optional[SheetsService] = None
+_cron_running = False
+scheduler = AsyncIOScheduler()
+
+
+def get_sheets_service() -> Optional[SheetsService]:
+    global _sheets_service
+    if _sheets_service is None and os.path.exists(CREDENTIALS_PATH):
+        _sheets_service = SheetsService(CREDENTIALS_PATH, SPREADSHEET_ID)
+    return _sheets_service
+
+
+async def run_auto_process():
+    """Cron 1: Find unprocessed videos in sheet, run full pipeline, send email, update sheet."""
+    global _cron_running
+    if _cron_running:
+        print("[AutoProcess] Skipping: previous run still in progress")
+        return
+
+    svc = get_sheets_service()
+    if not svc:
+        print("[AutoProcess] Sheets credentials not found, skipping")
+        return
+
+    _cron_running = True
+    try:
+        unprocessed = svc.get_unprocessed_videos()
+        if not unprocessed:
+            print("[AutoProcess] No unprocessed videos found")
+            return
+
+        print(f"[AutoProcess] Found {len(unprocessed)} video(s) to process")
+        loop = asyncio.get_event_loop()
+
+        for video in unprocessed:
+            url = video["url"]
+            row_index = video["row_index"]
+            print(f"[AutoProcess] Processing row {row_index}: {url}")
+
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            project_id = f"auto_{timestamp}_{uuid.uuid4().hex[:6]}"
+
+            # Phase 1 — analyze
+            request = AnalyzeRequest(
+                youtube_url=url,
+                resolution="1080p",
+                aspect_ratio="9:16",
+                color_grading="none",
+            )
+            await loop.run_in_executor(None, analyze_pipeline, request, project_id)
+
+            state = project_status.get(project_id, {})
+            if state.get("status") != "ready_for_review":
+                print(f"[AutoProcess] Phase 1 failed: {state.get('message', 'unknown')}")
+                continue
+
+            svc.mark_downloaded(row_index)
+
+            # Phase 2 — render all clips
+            candidates = project_data.get(project_id, {}).get("candidates", [])
+            if not candidates:
+                print(f"[AutoProcess] No clip candidates found for {url}")
+                svc.mark_processed(row_index)
+                continue
+
+            all_indices = list(range(len(candidates)))
+            await loop.run_in_executor(None, generate_pipeline, project_id, all_indices)
+
+            state = project_status.get(project_id, {})
+            if state.get("status") == "completed":
+                svc.mark_processed(row_index)
+                print(f"[AutoProcess] Done: {url} → {len(candidates)} clip(s)")
+            else:
+                print(f"[AutoProcess] Phase 2 failed: {state.get('message', 'unknown')}")
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[AutoProcess] Error: {e}")
+    finally:
+        _cron_running = False
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler.add_job(run_auto_process, "interval", minutes=CRON_INTERVAL_MINUTES, id="auto_process")
+    scheduler.start()
+    print(f"[Scheduler] Cron 1 started — auto-process every {CRON_INTERVAL_MINUTES} min")
+    yield
+    scheduler.shutdown()
+
+
+app = FastAPI(title="AI Video Shorts Generator API", lifespan=lifespan)
 
 # Directories
 TEMP_DIR = "temp"
@@ -328,3 +432,24 @@ def generate_quote(request: QuoteRequest):
 @app.get("/")
 def read_root():
     return {"message": "AI Video Shorts Generator API Running"}
+
+
+# ─────────────────────────────────────────────
+# Auto-process cron endpoints
+# ─────────────────────────────────────────────
+
+@app.post("/api/trigger-process")
+async def trigger_process():
+    """Manually trigger Cron 1 (auto-process unprocessed videos from sheet)."""
+    asyncio.create_task(run_auto_process())
+    return {"message": "Auto-process triggered"}
+
+
+@app.get("/api/cron-status")
+def get_cron_status():
+    """Check if auto-process cron is currently running."""
+    return {
+        "running": _cron_running,
+        "interval_minutes": CRON_INTERVAL_MINUTES,
+        "next_run": str(scheduler.get_job("auto_process").next_run_time) if scheduler.get_job("auto_process") else None,
+    }
