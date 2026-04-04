@@ -27,6 +27,7 @@ class DriveService:
                 json.dump(token_data, f, indent=2)
         service = build('drive', 'v3', credentials=creds)
         self.files = service.files()
+        self.permissions = service.permissions()
         self.root_folder_id = root_folder_id
 
     def _sanitize_folder_name(self, name: str) -> str:
@@ -60,7 +61,7 @@ class DriveService:
         file = self.files.create(
             body=metadata, media_body=media, fields='id,webViewLink'
         ).execute()
-        self.files.permissions().create(
+        self.permissions.create(
             fileId=file['id'],
             body={'type': 'anyone', 'role': 'reader'},
         ).execute()
