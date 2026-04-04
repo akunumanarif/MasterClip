@@ -1,15 +1,30 @@
 import os
 import re
+import json
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
-from google.oauth2.service_account import Credentials
-
-SCOPES = ['https://www.googleapis.com/auth/drive']
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 
 
 class DriveService:
-    def __init__(self, credentials_path: str, root_folder_id: str):
-        creds = Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
+    def __init__(self, token_path: str, root_folder_id: str):
+        self._token_path = token_path
+        with open(token_path) as f:
+            token_data = json.load(f)
+        creds = Credentials(
+            token=token_data['token'],
+            refresh_token=token_data['refresh_token'],
+            token_uri=token_data['token_uri'],
+            client_id=token_data['client_id'],
+            client_secret=token_data['client_secret'],
+            scopes=token_data['scopes'],
+        )
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            token_data['token'] = creds.token
+            with open(token_path, 'w') as f:
+                json.dump(token_data, f, indent=2)
         service = build('drive', 'v3', credentials=creds)
         self.files = service.files()
         self.root_folder_id = root_folder_id

@@ -23,6 +23,7 @@ services:
       - GOOGLE_CREDENTIALS_PATH=${GOOGLE_CREDENTIALS_PATH:-credentials/google_sheets_credentials.json}
       - CRON_INTERVAL_MINUTES=${CRON_INTERVAL_MINUTES:-15}
       - GOOGLE_DRIVE_FOLDER_ID=${GOOGLE_DRIVE_FOLDER_ID}
+      - GOOGLE_DRIVE_TOKEN_PATH=${GOOGLE_DRIVE_TOKEN_PATH:-credentials/google_drive_token.json}
     restart: always
 
   frontend:

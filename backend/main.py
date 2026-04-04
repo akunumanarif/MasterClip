@@ -36,6 +36,7 @@ CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials/google_shee
 CRON_INTERVAL_MINUTES = int(os.getenv("CRON_INTERVAL_MINUTES", "15"))
 
 DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
+DRIVE_TOKEN_PATH = os.getenv("GOOGLE_DRIVE_TOKEN_PATH", "credentials/google_drive_token.json")
 
 _sheets_service: Optional[SheetsService] = None
 _cron_running = False
@@ -50,8 +51,8 @@ def get_sheets_service() -> Optional[SheetsService]:
 
 
 def get_drive_service() -> Optional[DriveService]:
-    if DRIVE_FOLDER_ID and os.path.exists(CREDENTIALS_PATH):
-        return DriveService(CREDENTIALS_PATH, DRIVE_FOLDER_ID)
+    if DRIVE_FOLDER_ID and os.path.exists(DRIVE_TOKEN_PATH):
+        return DriveService(DRIVE_TOKEN_PATH, DRIVE_FOLDER_ID)
     return None
 
 
