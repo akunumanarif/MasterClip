@@ -109,9 +109,10 @@ def download_youtube_video(url: str, output_dir: str = "temp", resolution: str =
                 info = ydl.extract_info(url, download=True)
                 video_id = info['id']
                 ext = info['ext']
+                video_title = info.get('title', '') or ''
                 final_path = os.path.join(output_dir, f"{video_id}.{ext}")
                 print(f"✅ Download complete: {os.path.basename(final_path)}")
-                return _ensure_h264(final_path, output_dir)
+                return _ensure_h264(final_path, output_dir), video_title
                 
         except Exception as e:
             error_msg = str(e)
@@ -128,9 +129,10 @@ def download_youtube_video(url: str, output_dir: str = "temp", resolution: str =
             info = ydl.extract_info(url, download=True)
             video_id = info['id']
             ext = info['ext']
+            video_title = info.get('title', '') or ''
             final_path = os.path.join(output_dir, f"{video_id}.{ext}")
             print(f"✅ Download complete: {os.path.basename(final_path)}")
-            return _ensure_h264(final_path, output_dir)
+            return _ensure_h264(final_path, output_dir), video_title
     except Exception as e:
         error_msg = str(e)
         print(f"❌ Download Error: {error_msg}")

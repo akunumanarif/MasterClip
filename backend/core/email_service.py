@@ -73,7 +73,8 @@ Number of Clips: {len(clips)}
 Download Links:
 """
             for i, clip in enumerate(clips, 1):
-                download_url = f"{self.base_url}{clip['url']}"
+                url = clip['url']
+                download_url = url if url.startswith("http") else f"{self.base_url}{url}"
                 text_content += f"\nClip {i}: {download_url}"
             
             text_content += f"""
@@ -200,7 +201,8 @@ AI Video Shorts Generator
 """
             
             for i, clip in enumerate(clips, 1):
-                download_url = f"{self.base_url}{clip['url']}"
+                url = clip['url']
+                download_url = url if url.startswith("http") else f"{self.base_url}{url}"
                 html_content += f"""
             <div class="clip-item">
                 <div class="clip-header">Clip {i}</div>

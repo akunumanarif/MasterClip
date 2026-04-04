@@ -25,6 +25,7 @@ from core.pipeline.segment_merger import merge as merge_segments
 from core.pipeline.highlight_detector import detect_highlights
 from core.pipeline.renderer import render_clip
 from core.sheets_service import SheetsService
+from core.drive_service import DriveService
 
 # ─────────────────────────────────────────────
 # Google Sheets + Scheduler setup
@@ -33,6 +34,8 @@ from core.sheets_service import SheetsService
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "1LjiJ-LAOXX3MKiarUSAmRS7BKeUlsglSiiBDXU24C-I")
 CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials/google_sheets_credentials.json")
 CRON_INTERVAL_MINUTES = int(os.getenv("CRON_INTERVAL_MINUTES", "15"))
+
+DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
 
 _sheets_service: Optional[SheetsService] = None
 _cron_running = False
@@ -44,6 +47,12 @@ def get_sheets_service() -> Optional[SheetsService]:
     if _sheets_service is None and os.path.exists(CREDENTIALS_PATH):
         _sheets_service = SheetsService(CREDENTIALS_PATH, SPREADSHEET_ID)
     return _sheets_service
+
+
+def get_drive_service() -> Optional[DriveService]:
+    if DRIVE_FOLDER_ID and os.path.exists(CREDENTIALS_PATH):
+        return DriveService(CREDENTIALS_PATH, DRIVE_FOLDER_ID)
+    return None
 
 
 async def run_auto_process():
@@ -180,13 +189,13 @@ def analyze_pipeline(request: AnalyzeRequest, project_id: str):
         os.makedirs(project_dir, exist_ok=True)
 
         # 1. Download video
-        video_path = download_youtube_video(
+        video_path, video_title = download_youtube_video(
             request.youtube_url,
             TEMP_DIR,
             request.resolution,
             request.cookies_file
         )
-        print(f"[{project_id}] Downloaded: {video_path}")
+        print(f"[{project_id}] Downloaded: {video_path} | Title: {video_title}")
 
         # 2. Extract audio
         update_status(project_id, "analyzing", "Extracting audio...")
@@ -217,6 +226,7 @@ def analyze_pipeline(request: AnalyzeRequest, project_id: str):
         # Store for Phase 2
         project_data[project_id] = {
             "video_path": video_path,
+            "video_title": video_title,
             "audio_path": audio_path,
             "diarization": diarization,
             "candidates": candidates,
@@ -326,9 +336,22 @@ def generate_pipeline(project_id: str, selected_indices: List[int]):
                 print(f"    FFmpeg subtitle stderr:\n{sub_result.stderr[-3000:]}")
                 raise RuntimeError(f"Subtitle burn failed: {sub_result.stderr[-500:]}")
 
+            # Upload to Google Drive if configured, otherwise fallback to local URL
+            drive = get_drive_service()
+            if drive:
+                video_title = data.get("video_title") or project_id
+                folder_id = drive.get_or_create_folder(video_title)
+                clip_url = drive.upload_clip(final_path, final_filename, folder_id)
+                try:
+                    os.remove(final_path)
+                except Exception as del_err:
+                    print(f"[{project_id}] Warning: could not delete local file: {del_err}")
+            else:
+                clip_url = f"/clips/{project_id}/{final_filename}"
+
             output_files.append({
                 "filename": final_filename,
-                "url": f"/clips/{project_id}/{final_filename}",
+                "url": clip_url,
                 "start": clip_start,
                 "end": clip_end,
                 "score": clip.get("score", 0),
