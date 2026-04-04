@@ -83,41 +83,53 @@ async def run_auto_process():
             row_index = video["row_index"]
             print(f"[AutoProcess] Processing row {row_index}: {url}")
 
+            # Flag as processing immediately to prevent duplicate runs
+            svc.mark_processing(row_index)
+
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
             project_id = f"auto_{timestamp}_{uuid.uuid4().hex[:6]}"
 
-            # Phase 1 — analyze
-            request = AnalyzeRequest(
-                youtube_url=url,
-                resolution="1080p",
-                aspect_ratio="9:16",
-                color_grading="none",
-            )
-            await loop.run_in_executor(None, analyze_pipeline, request, project_id)
+            try:
+                # Phase 1 — analyze
+                request = AnalyzeRequest(
+                    youtube_url=url,
+                    resolution="1080p",
+                    aspect_ratio="9:16",
+                    color_grading="none",
+                )
+                await loop.run_in_executor(None, analyze_pipeline, request, project_id)
 
-            state = project_status.get(project_id, {})
-            if state.get("status") != "ready_for_review":
-                print(f"[AutoProcess] Phase 1 failed: {state.get('message', 'unknown')}")
-                continue
+                state = project_status.get(project_id, {})
+                if state.get("status") != "ready_for_review":
+                    print(f"[AutoProcess] Phase 1 failed: {state.get('message', 'unknown')}")
+                    svc.unmark_processing(row_index)
+                    continue
 
-            svc.mark_downloaded(row_index)
+                svc.mark_downloaded(row_index)
 
-            # Phase 2 — render all clips
-            candidates = project_data.get(project_id, {}).get("candidates", [])
-            if not candidates:
-                print(f"[AutoProcess] No clip candidates found for {url}")
-                svc.mark_processed(row_index)
-                continue
+                # Phase 2 — render all clips
+                candidates = project_data.get(project_id, {}).get("candidates", [])
+                if not candidates:
+                    print(f"[AutoProcess] No clip candidates found for {url}")
+                    svc.mark_processed(row_index)
+                    svc.unmark_processing(row_index)
+                    continue
 
-            all_indices = list(range(len(candidates)))
-            await loop.run_in_executor(None, generate_pipeline, project_id, all_indices)
+                all_indices = list(range(len(candidates)))
+                await loop.run_in_executor(None, generate_pipeline, project_id, all_indices)
 
-            state = project_status.get(project_id, {})
-            if state.get("status") == "completed":
-                svc.mark_processed(row_index)
-                print(f"[AutoProcess] Done: {url} → {len(candidates)} clip(s)")
-            else:
-                print(f"[AutoProcess] Phase 2 failed: {state.get('message', 'unknown')}")
+                state = project_status.get(project_id, {})
+                if state.get("status") == "completed":
+                    svc.mark_processed(row_index)
+                    svc.unmark_processing(row_index)
+                    print(f"[AutoProcess] Done: {url} → {len(candidates)} clip(s)")
+                else:
+                    print(f"[AutoProcess] Phase 2 failed: {state.get('message', 'unknown')}")
+                    svc.unmark_processing(row_index)
+
+            except Exception as video_err:
+                print(f"[AutoProcess] Error processing row {row_index}: {video_err}")
+                svc.unmark_processing(row_index)
 
     except Exception as e:
         import traceback
