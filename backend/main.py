@@ -174,7 +174,14 @@ async def run_instagram_upload():
             for video_url in video_urls:
                 print(f"[InstagramUpload] Uploading: {video_url[:60]}...")
                 try:
+                    # Read caption from .txt file saved alongside the video
                     caption = "New clip! #shorts #viral #content"
+                    if base_url and video_url.startswith(base_url):
+                        rel_path = video_url[len(base_url):].lstrip("/")
+                        txt_path = os.path.splitext(rel_path)[0] + ".txt"
+                        if os.path.exists(txt_path):
+                            with open(txt_path, "r", encoding="utf-8") as f:
+                                caption = f.read().strip()
                     instagram_url = await loop.run_in_executor(
                         None, instagram_service.upload_reel, video_url, caption
                     )
@@ -189,6 +196,11 @@ async def run_instagram_upload():
                             print(f"[InstagramUpload] Deleted local file: {rel_path}")
                         except Exception as del_err:
                             print(f"[InstagramUpload] Warning: could not delete {rel_path}: {del_err}")
+                        txt_path = os.path.splitext(rel_path)[0] + ".txt"
+                        try:
+                            os.remove(txt_path)
+                        except Exception:
+                            pass
                 except Exception as clip_err:
                     all_success = False
                     print(f"[InstagramUpload] Error uploading {video_url[:60]}: {clip_err}")
@@ -457,6 +469,18 @@ def generate_pipeline(project_id: str, selected_indices: List[int]):
                 language=data.get("language", "en"),
                 duration=clip.get("duration", clip_end - clip_start),
             )
+
+            # Save caption as .txt alongside the video for Instagram cron
+            caption_txt_path = os.path.join(project_dir, os.path.splitext(final_filename)[0] + ".txt")
+            try:
+                hook = caption_data.get("hook", "")
+                body = caption_data.get("caption", "")
+                hashtags = " ".join(f"#{h}" for h in caption_data.get("hashtags", []))
+                caption_text = f"{hook}\n\n{body}\n\n{hashtags}".strip()
+                with open(caption_txt_path, "w", encoding="utf-8") as f:
+                    f.write(caption_text)
+            except Exception as cap_err:
+                print(f"[{project_id}] Warning: could not save caption txt: {cap_err}")
 
             # Store clip on VPS, build public URL
             base_url = os.getenv("BASE_URL", "").rstrip("/")
