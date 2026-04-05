@@ -27,6 +27,7 @@ from core.pipeline.renderer import render_clip
 from core.caption_generator import generate_caption
 from core.sheets_service import SheetsService
 from core.drive_service import DriveService
+from core.instagram_service import instagram_service
 
 # ─────────────────────────────────────────────
 # Google Sheets + Scheduler setup
@@ -35,12 +36,14 @@ from core.drive_service import DriveService
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "1LjiJ-LAOXX3MKiarUSAmRS7BKeUlsglSiiBDXU24C-I")
 CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials/google_sheets_credentials.json")
 CRON_INTERVAL_MINUTES = int(os.getenv("CRON_INTERVAL_MINUTES", "15"))
+INSTAGRAM_CRON_INTERVAL_MINUTES = int(os.getenv("INSTAGRAM_CRON_INTERVAL_MINUTES", "30"))
 
 DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
 DRIVE_TOKEN_PATH = os.getenv("GOOGLE_DRIVE_TOKEN_PATH", "credentials/google_drive_token.json")
 
 _sheets_service: Optional[SheetsService] = None
 _cron_running = False
+_instagram_cron_running = False
 scheduler = AsyncIOScheduler()
 
 
@@ -107,6 +110,7 @@ async def run_auto_process():
                     continue
 
                 svc.mark_downloaded(row_index)
+                project_data[project_id]["row_index"] = row_index
 
                 # Phase 2 — render all clips
                 candidates = project_data.get(project_id, {}).get("candidates", [])
@@ -140,11 +144,61 @@ async def run_auto_process():
         _cron_running = False
 
 
+async def run_instagram_upload():
+    """Cron 2: Find processed clips with Drive URL but no Instagram URL, upload as Reels."""
+    global _instagram_cron_running
+    if _instagram_cron_running:
+        print("[InstagramUpload] Skipping: previous run still in progress")
+        return
+    if not instagram_service.is_configured():
+        print("[InstagramUpload] Skipping: INSTAGRAM_USER_ID or INSTAGRAM_ACCESS_TOKEN not set")
+        return
+
+    svc = get_sheets_service()
+    if not svc:
+        print("[InstagramUpload] Sheets credentials not found, skipping")
+        return
+
+    _instagram_cron_running = True
+    try:
+        pending = svc.get_pending_instagram_upload()
+        if not pending:
+            print("[InstagramUpload] No clips pending Instagram upload")
+            return
+
+        print(f"[InstagramUpload] Found {len(pending)} clip(s) to upload")
+        loop = asyncio.get_event_loop()
+
+        for row in pending:
+            row_index = row["row_index"]
+            drive_url = row["drive_url"]
+            print(f"[InstagramUpload] Uploading row {row_index}: {drive_url[:60]}...")
+            try:
+                # Build a minimal caption if no caption data available
+                caption = "New clip! #shorts #viral #content"
+                instagram_url = await loop.run_in_executor(
+                    None, instagram_service.upload_reel, drive_url, caption
+                )
+                svc.store_instagram_url(row_index, instagram_url)
+                print(f"[InstagramUpload] Done: {instagram_url}")
+            except Exception as clip_err:
+                print(f"[InstagramUpload] Error uploading row {row_index}: {clip_err}")
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[InstagramUpload] Error: {e}")
+    finally:
+        _instagram_cron_running = False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler.add_job(run_auto_process, "interval", minutes=CRON_INTERVAL_MINUTES, id="auto_process")
+    scheduler.add_job(run_instagram_upload, "interval", minutes=INSTAGRAM_CRON_INTERVAL_MINUTES, id="instagram_upload")
     scheduler.start()
     print(f"[Scheduler] Cron 1 started — auto-process every {CRON_INTERVAL_MINUTES} min")
+    print(f"[Scheduler] Cron 2 started — instagram-upload every {INSTAGRAM_CRON_INTERVAL_MINUTES} min")
     yield
     scheduler.shutdown()
 
@@ -373,6 +427,16 @@ def generate_pipeline(project_id: str, selected_indices: List[int]):
                 video_title = data.get("video_title") or project_id
                 folder_id = drive.get_or_create_folder(video_title)
                 clip_url = drive.upload_clip(final_path, final_filename, folder_id)
+                # Store Drive URL for Instagram idempotency (only first clip per project)
+                if idx == 0:
+                    row_index = data.get("row_index")
+                    if row_index:
+                        svc_sheets = get_sheets_service()
+                        if svc_sheets:
+                            try:
+                                svc_sheets.store_drive_url(row_index, clip_url)
+                            except Exception as store_err:
+                                print(f"[{project_id}] Warning: could not store drive_url: {store_err}")
                 # Upload caption .txt alongside the video
                 try:
                     drive.upload_caption(caption_data, final_filename, folder_id)
@@ -513,3 +577,10 @@ def get_cron_status():
         "interval_minutes": CRON_INTERVAL_MINUTES,
         "next_run": str(scheduler.get_job("auto_process").next_run_time) if scheduler.get_job("auto_process") else None,
     }
+
+
+@app.post("/api/trigger-instagram-upload")
+async def trigger_instagram_upload():
+    """Manually trigger Cron 2 (upload pending clips to Instagram)."""
+    asyncio.create_task(run_instagram_upload())
+    return {"message": "Instagram upload triggered"}
