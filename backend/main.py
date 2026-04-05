@@ -24,6 +24,7 @@ from core.pipeline.diarizer import diarize
 from core.pipeline.segment_merger import merge as merge_segments
 from core.pipeline.highlight_detector import detect_highlights
 from core.pipeline.renderer import render_clip
+from core.caption_generator import generate_caption
 from core.sheets_service import SheetsService
 from core.drive_service import DriveService
 
@@ -236,6 +237,14 @@ def analyze_pipeline(request: AnalyzeRequest, project_id: str):
         candidates = detect_highlights(merged_segments)
         print(f"[{project_id}] Found {len(candidates)} clip candidates")
 
+        # Enrich candidates with full transcript text for caption generation
+        for candidate in candidates:
+            full_text = " ".join(
+                s["text"] for s in merged_segments
+                if s["end"] > candidate["start"] and s["start"] < candidate["end"]
+            )
+            candidate["full_text"] = full_text
+
         # Store for Phase 2
         project_data[project_id] = {
             "video_path": video_path,
@@ -246,6 +255,7 @@ def analyze_pipeline(request: AnalyzeRequest, project_id: str):
             "aspect_ratio": request.aspect_ratio,
             "color_grading": request.color_grading,
             "project_dir": project_dir,
+            "language": transcript.get("language", "en"),
         }
 
         update_status(
@@ -362,6 +372,15 @@ def generate_pipeline(project_id: str, selected_indices: List[int]):
             else:
                 clip_url = f"/clips/{project_id}/{final_filename}"
 
+            # Generate social media caption
+            update_status(project_id, "generating",
+                          f"Generating caption for clip {clip_num}/{total}...")
+            caption_data = generate_caption(
+                clip_text=clip.get("full_text", clip.get("text_preview", "")),
+                language=data.get("language", "en"),
+                duration=clip.get("duration", clip_end - clip_start),
+            )
+
             output_files.append({
                 "filename": final_filename,
                 "url": clip_url,
@@ -369,6 +388,7 @@ def generate_pipeline(project_id: str, selected_indices: List[int]):
                 "end": clip_end,
                 "score": clip.get("score", 0),
                 "text_preview": clip.get("text_preview", ""),
+                "caption": caption_data,
             })
 
             # Clean up temp reframed file

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import axios from "axios";
-import { Play, Scissors, Video, Loader2, Link as LinkIcon, Clock, Plus, Trash2, CheckSquare, Square, Zap } from "lucide-react";
+import { Play, Scissors, Video, Loader2, Link as LinkIcon, Clock, Plus, Trash2, CheckSquare, Square, Zap, Copy, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Toaster, toast } from "sonner";
 
@@ -39,7 +39,9 @@ export default function Home() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [status, setStatus] = useState<AppStatus>("idle");
   const [statusMessage, setStatusMessage] = useState("");
-  const [outputFiles, setOutputFiles] = useState<Array<{ filename: string; url: string; text_preview?: string }>>([]);
+  interface CaptionData { hook: string; caption: string; hashtags: string[]; }
+  const [outputFiles, setOutputFiles] = useState<Array<{ filename: string; url: string; text_preview?: string; caption?: CaptionData }>>([]);
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [emailSent, setEmailSent] = useState(false);
   const [resolution, setResolution] = useState("1080p");
   const [colorGrading, setColorGrading] = useState("none");
@@ -224,6 +226,18 @@ export default function Home() {
   };
 
   const resetToIdle = () => { setStatus("idle"); setProjectId(null); setStatusMessage(""); setClipCandidates([]); setSelectedIndices(new Set()); };
+
+  const copyCaption = (file: { caption?: CaptionData }, idx: number) => {
+    if (!file.caption) return;
+    const { hook, caption, hashtags } = file.caption;
+    const hashtagStr = hashtags.map((h: string) => `#${h}`).join(" ");
+    const text = `${hook}\n\n${caption}\n\n${hashtagStr}`;
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedIdx(idx);
+      setTimeout(() => setCopiedIdx(null), 2000);
+      toast.success("Caption copied!");
+    });
+  };
 
   return (
     <main className="min-h-screen bg-background text-foreground flex flex-col items-center py-20 px-4">
@@ -499,24 +513,54 @@ export default function Home() {
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 {outputFiles.map((file, idx) => (
-                  <div key={idx} className="space-y-3 bg-black/20 p-3 rounded-xl border border-border/50">
-                    <p className="font-medium text-sm text-center">Clip {idx + 1}</p>
-                    {file.text_preview && (
-                      <p className="text-xs text-muted-foreground text-center line-clamp-2 px-1">{file.text_preview}</p>
-                    )}
-                    <div className="relative w-full aspect-[9/16] bg-black rounded-lg overflow-hidden border border-border shadow-lg ring-1 ring-white/10">
-                      <video src={file.url} controls className="w-full h-full object-cover" />
+                  <div key={idx} className="space-y-3">
+                    {/* Video */}
+                    <div className="space-y-2 bg-black/20 p-3 rounded-xl border border-border/50">
+                      <p className="font-medium text-sm text-center">Clip {idx + 1}</p>
+                      <div className="relative w-full aspect-[9/16] bg-black rounded-lg overflow-hidden border border-border shadow-lg ring-1 ring-white/10">
+                        <video src={file.url} controls className="w-full h-full object-cover" />
+                      </div>
+                      <a
+                        href={file.url}
+                        download
+                        className="flex items-center justify-center gap-2 w-full py-2 rounded-lg bg-foreground text-background text-sm font-semibold hover:bg-foreground/90 transition-colors"
+                      >
+                        <Video className="w-3 h-3" />
+                        Download
+                      </a>
                     </div>
-                    <a
-                      href={file.url}
-                      download
-                      className="flex items-center justify-center gap-2 w-full py-2 rounded-lg bg-foreground text-background text-sm font-semibold hover:bg-foreground/90 transition-colors"
-                    >
-                      <Video className="w-3 h-3" />
-                      Download
-                    </a>
+
+                    {/* Caption card */}
+                    {file.caption ? (
+                      <div className="bg-card border border-border rounded-xl p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Social Media Caption</span>
+                          <button
+                            onClick={() => copyCaption(file, idx)}
+                            className="flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20 transition-colors"
+                          >
+                            {copiedIdx === idx ? <><Check className="w-3 h-3" />Copied!</> : <><Copy className="w-3 h-3" />Copy</>}
+                          </button>
+                        </div>
+                        <p className="font-semibold text-sm leading-snug">{file.caption.hook}</p>
+                        <p className="text-sm text-muted-foreground leading-relaxed">{file.caption.caption}</p>
+                        {file.caption.hashtags?.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 pt-1">
+                            {file.caption.hashtags.map((tag: string, ti: number) => (
+                              <span key={ti} className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
+                                #{tag}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="bg-card/50 border border-border rounded-xl p-4">
+                        <p className="text-xs text-muted-foreground text-center">Caption not available</p>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
