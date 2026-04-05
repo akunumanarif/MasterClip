@@ -116,12 +116,13 @@ async def run_auto_process():
                 await loop.run_in_executor(None, generate_pipeline, project_id, all_indices)
 
                 state = project_status.get(project_id, {})
-                if state.get("status") == "completed":
+                if state.get("status") == "completed" or state.get("outputs"):
                     svc.mark_processed(row_index)
                     svc.unmark_processing(row_index)
                     print(f"[AutoProcess] Done: {url} → {len(candidates)} clip(s)")
                 else:
                     print(f"[AutoProcess] Phase 2 failed: {state.get('message', 'unknown')}")
+                    svc.mark_processed(row_index)
                     svc.unmark_processing(row_index)
 
             except Exception as video_err:
@@ -161,31 +162,40 @@ async def run_instagram_upload():
         print(f"[InstagramUpload] Found {len(pending)} clip(s) to upload")
         loop = asyncio.get_event_loop()
 
+        base_url = os.getenv("BASE_URL", "").rstrip("/")
+
         for row in pending:
             row_index = row["row_index"]
-            video_url = row["drive_url"]  # actually VPS URL stored in col E
-            print(f"[InstagramUpload] Uploading row {row_index}: {video_url[:60]}...")
-            try:
-                # Build a minimal caption if no caption data available
-                caption = "New clip! #shorts #viral #content"
-                instagram_url = await loop.run_in_executor(
-                    None, instagram_service.upload_reel, video_url, caption
-                )
-                svc.store_instagram_url(row_index, instagram_url)
-                print(f"[InstagramUpload] Done: {instagram_url}")
+            video_urls = [u.strip() for u in row["drive_url"].split(",") if u.strip()]
+            print(f"[InstagramUpload] Row {row_index}: {len(video_urls)} clip(s) to upload")
 
-                # Clean up local clip file after successful Instagram upload
-                base_url = os.getenv("BASE_URL", "").rstrip("/")
-                if base_url and video_url.startswith(base_url):
-                    rel_path = video_url[len(base_url):].lstrip("/")  # e.g. clips/project_id/file.mp4
-                    local_path = os.path.join(rel_path)
-                    try:
-                        os.remove(local_path)
-                        print(f"[InstagramUpload] Deleted local file: {local_path}")
-                    except Exception as del_err:
-                        print(f"[InstagramUpload] Warning: could not delete {local_path}: {del_err}")
-            except Exception as clip_err:
-                print(f"[InstagramUpload] Error uploading row {row_index}: {clip_err}")
+            instagram_urls = []
+            all_success = True
+            for video_url in video_urls:
+                print(f"[InstagramUpload] Uploading: {video_url[:60]}...")
+                try:
+                    caption = "New clip! #shorts #viral #content"
+                    instagram_url = await loop.run_in_executor(
+                        None, instagram_service.upload_reel, video_url, caption
+                    )
+                    instagram_urls.append(instagram_url)
+                    print(f"[InstagramUpload] Done: {instagram_url}")
+
+                    # Delete local file after successful upload
+                    if base_url and video_url.startswith(base_url):
+                        rel_path = video_url[len(base_url):].lstrip("/")
+                        try:
+                            os.remove(rel_path)
+                            print(f"[InstagramUpload] Deleted local file: {rel_path}")
+                        except Exception as del_err:
+                            print(f"[InstagramUpload] Warning: could not delete {rel_path}: {del_err}")
+                except Exception as clip_err:
+                    all_success = False
+                    print(f"[InstagramUpload] Error uploading {video_url[:60]}: {clip_err}")
+
+            if instagram_urls:
+                svc.store_instagram_url(row_index, ",".join(instagram_urls))
+                print(f"[InstagramUpload] Stored {len(instagram_urls)} Instagram URL(s) for row {row_index}")
 
     except Exception as e:
         import traceback
@@ -374,6 +384,7 @@ def generate_pipeline(project_id: str, selected_indices: List[int]):
             return
 
         output_files = []
+        clip_vps_urls = []  # collect all VPS URLs for spreadsheet col E
         total = len(selected)
 
         for idx, clip in enumerate(selected):
@@ -429,6 +440,8 @@ def generate_pipeline(project_id: str, selected_indices: List[int]):
                 "-movflags", "+faststart",
                 "-c:a", "aac",
                 "-b:a", "192k",
+                "-ar", "44100",
+                "-ac", "2",
                 final_path
             ]
             print(f"    Burning subtitles: {' '.join(subtitle_cmd)}")
@@ -448,17 +461,8 @@ def generate_pipeline(project_id: str, selected_indices: List[int]):
             # Store clip on VPS, build public URL
             base_url = os.getenv("BASE_URL", "").rstrip("/")
             clip_url = f"{base_url}/clips/{project_id}/{final_filename}" if base_url else f"/clips/{project_id}/{final_filename}"
-
-            # Store VPS URL in spreadsheet col E for Instagram cron (first clip only)
-            if idx == 0:
-                row_index = data.get("row_index")
-                if row_index and base_url:
-                    svc_sheets = get_sheets_service()
-                    if svc_sheets:
-                        try:
-                            svc_sheets.store_drive_url(row_index, clip_url)
-                        except Exception as store_err:
-                            print(f"[{project_id}] Warning: could not store clip url: {store_err}")
+            if base_url:
+                clip_vps_urls.append(clip_url)
 
             output_files.append({
                 "filename": final_filename,
@@ -475,6 +479,16 @@ def generate_pipeline(project_id: str, selected_indices: List[int]):
                 os.remove(reframed_path)
             except Exception:
                 pass
+
+        # Store all VPS URLs (comma-separated) in spreadsheet col E for Instagram cron
+        row_index = data.get("row_index")
+        if row_index and clip_vps_urls:
+            svc_sheets = get_sheets_service()
+            if svc_sheets:
+                try:
+                    svc_sheets.store_drive_url(row_index, ",".join(clip_vps_urls))
+                except Exception as store_err:
+                    print(f"[{project_id}] Warning: could not store clip urls: {store_err}")
 
         # Send email notification
         update_status(project_id, "generating", "Sending email notification...")
