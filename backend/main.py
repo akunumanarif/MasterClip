@@ -26,7 +26,6 @@ from core.pipeline.highlight_detector import detect_highlights
 from core.pipeline.renderer import render_clip
 from core.caption_generator import generate_caption
 from core.sheets_service import SheetsService
-from core.drive_service import DriveService
 from core.instagram_service import instagram_service
 
 # ─────────────────────────────────────────────
@@ -37,9 +36,7 @@ SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "1LjiJ-LAOXX3MKiarUSAmRS7BKeUlsglSi
 CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials/google_sheets_credentials.json")
 CRON_INTERVAL_MINUTES = int(os.getenv("CRON_INTERVAL_MINUTES", "15"))
 INSTAGRAM_CRON_INTERVAL_MINUTES = int(os.getenv("INSTAGRAM_CRON_INTERVAL_MINUTES", "30"))
-
-DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
-DRIVE_TOKEN_PATH = os.getenv("GOOGLE_DRIVE_TOKEN_PATH", "credentials/google_drive_token.json")
+CLIP_RETENTION_DAYS = int(os.getenv("CLIP_RETENTION_DAYS", "3"))
 
 _sheets_service: Optional[SheetsService] = None
 _cron_running = False
@@ -53,11 +50,6 @@ def get_sheets_service() -> Optional[SheetsService]:
         _sheets_service = SheetsService(CREDENTIALS_PATH, SPREADSHEET_ID)
     return _sheets_service
 
-
-def get_drive_service() -> Optional[DriveService]:
-    if DRIVE_FOLDER_ID and os.path.exists(DRIVE_TOKEN_PATH):
-        return DriveService(DRIVE_TOKEN_PATH, DRIVE_FOLDER_ID)
-    return None
 
 
 async def run_auto_process():
@@ -171,16 +163,27 @@ async def run_instagram_upload():
 
         for row in pending:
             row_index = row["row_index"]
-            drive_url = row["drive_url"]
-            print(f"[InstagramUpload] Uploading row {row_index}: {drive_url[:60]}...")
+            video_url = row["drive_url"]  # actually VPS URL stored in col E
+            print(f"[InstagramUpload] Uploading row {row_index}: {video_url[:60]}...")
             try:
                 # Build a minimal caption if no caption data available
                 caption = "New clip! #shorts #viral #content"
                 instagram_url = await loop.run_in_executor(
-                    None, instagram_service.upload_reel, drive_url, caption
+                    None, instagram_service.upload_reel, video_url, caption
                 )
                 svc.store_instagram_url(row_index, instagram_url)
                 print(f"[InstagramUpload] Done: {instagram_url}")
+
+                # Clean up local clip file after successful Instagram upload
+                base_url = os.getenv("BASE_URL", "").rstrip("/")
+                if base_url and video_url.startswith(base_url):
+                    rel_path = video_url[len(base_url):].lstrip("/")  # e.g. clips/project_id/file.mp4
+                    local_path = os.path.join(rel_path)
+                    try:
+                        os.remove(local_path)
+                        print(f"[InstagramUpload] Deleted local file: {local_path}")
+                    except Exception as del_err:
+                        print(f"[InstagramUpload] Warning: could not delete {local_path}: {del_err}")
             except Exception as clip_err:
                 print(f"[InstagramUpload] Error uploading row {row_index}: {clip_err}")
 
@@ -192,13 +195,34 @@ async def run_instagram_upload():
         _instagram_cron_running = False
 
 
+async def run_cleanup():
+    """Cron 3: Delete clip folders older than CLIP_RETENTION_DAYS days."""
+    import time
+    now = time.time()
+    cutoff = now - CLIP_RETENTION_DAYS * 86400
+    deleted = 0
+    for folder_name in os.listdir(CLIPS_DIR):
+        folder_path = os.path.join(CLIPS_DIR, folder_name)
+        if os.path.isdir(folder_path) and os.path.getmtime(folder_path) < cutoff:
+            try:
+                shutil.rmtree(folder_path)
+                deleted += 1
+                print(f"[Cleanup] Deleted old clip folder: {folder_name}")
+            except Exception as e:
+                print(f"[Cleanup] Could not delete {folder_name}: {e}")
+    if deleted:
+        print(f"[Cleanup] Removed {deleted} folder(s) older than {CLIP_RETENTION_DAYS} day(s)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     scheduler.add_job(run_auto_process, "interval", minutes=CRON_INTERVAL_MINUTES, id="auto_process")
     scheduler.add_job(run_instagram_upload, "interval", minutes=INSTAGRAM_CRON_INTERVAL_MINUTES, id="instagram_upload")
+    scheduler.add_job(run_cleanup, "interval", hours=12, id="cleanup")
     scheduler.start()
     print(f"[Scheduler] Cron 1 started — auto-process every {CRON_INTERVAL_MINUTES} min")
     print(f"[Scheduler] Cron 2 started — instagram-upload every {INSTAGRAM_CRON_INTERVAL_MINUTES} min")
+    print(f"[Scheduler] Cron 3 started — cleanup every 12h (retention={CLIP_RETENTION_DAYS}d)")
     yield
     scheduler.shutdown()
 
@@ -421,33 +445,20 @@ def generate_pipeline(project_id: str, selected_indices: List[int]):
                 duration=clip.get("duration", clip_end - clip_start),
             )
 
-            # Upload to Google Drive if configured, otherwise fallback to local URL
-            drive = get_drive_service()
-            if drive:
-                video_title = data.get("video_title") or project_id
-                folder_id = drive.get_or_create_folder(video_title)
-                clip_url = drive.upload_clip(final_path, final_filename, folder_id)
-                # Store Drive URL for Instagram idempotency (only first clip per project)
-                if idx == 0:
-                    row_index = data.get("row_index")
-                    if row_index:
-                        svc_sheets = get_sheets_service()
-                        if svc_sheets:
-                            try:
-                                svc_sheets.store_drive_url(row_index, clip_url)
-                            except Exception as store_err:
-                                print(f"[{project_id}] Warning: could not store drive_url: {store_err}")
-                # Upload caption .txt alongside the video
-                try:
-                    drive.upload_caption(caption_data, final_filename, folder_id)
-                except Exception as cap_err:
-                    print(f"[{project_id}] Warning: caption upload to Drive failed: {cap_err}")
-                try:
-                    os.remove(final_path)
-                except Exception as del_err:
-                    print(f"[{project_id}] Warning: could not delete local file: {del_err}")
-            else:
-                clip_url = f"/clips/{project_id}/{final_filename}"
+            # Store clip on VPS, build public URL
+            base_url = os.getenv("BASE_URL", "").rstrip("/")
+            clip_url = f"{base_url}/clips/{project_id}/{final_filename}" if base_url else f"/clips/{project_id}/{final_filename}"
+
+            # Store VPS URL in spreadsheet col E for Instagram cron (first clip only)
+            if idx == 0:
+                row_index = data.get("row_index")
+                if row_index and base_url:
+                    svc_sheets = get_sheets_service()
+                    if svc_sheets:
+                        try:
+                            svc_sheets.store_drive_url(row_index, clip_url)
+                        except Exception as store_err:
+                            print(f"[{project_id}] Warning: could not store clip url: {store_err}")
 
             output_files.append({
                 "filename": final_filename,
