@@ -1,8 +1,9 @@
 import os
 import re
 import json
+import tempfile
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload, MediaInMemoryUpload
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
@@ -67,3 +68,31 @@ class DriveService:
         ).execute()
         print(f"[DriveService] Uploaded {filename} → {file['webViewLink']}")
         return file['webViewLink']
+
+    def upload_caption(self, caption: dict, video_filename: str, folder_id: str) -> str:
+        """
+        Upload caption as a .txt file to Drive folder.
+        Filename matches the video but with .txt extension.
+        Returns shareable view URL.
+        """
+        txt_filename = os.path.splitext(video_filename)[0] + ".txt"
+        hook = caption.get("hook", "")
+        body = caption.get("caption", "")
+        hashtags = " ".join(f"#{h}" for h in caption.get("hashtags", []))
+        content = f"{hook}\n\n{body}\n\n{hashtags}".strip()
+
+        media = MediaInMemoryUpload(
+            content.encode("utf-8"),
+            mimetype="text/plain",
+            resumable=False
+        )
+        metadata = {"name": txt_filename, "parents": [folder_id]}
+        file = self.files.create(
+            body=metadata, media_body=media, fields="id,webViewLink"
+        ).execute()
+        self.permissions.create(
+            fileId=file["id"],
+            body={"type": "anyone", "role": "reader"},
+        ).execute()
+        print(f"[DriveService] Uploaded caption {txt_filename} → {file['webViewLink']}")
+        return file["webViewLink"]

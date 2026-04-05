@@ -359,20 +359,6 @@ def generate_pipeline(project_id: str, selected_indices: List[int]):
                 print(f"    FFmpeg subtitle stderr:\n{sub_result.stderr[-3000:]}")
                 raise RuntimeError(f"Subtitle burn failed: {sub_result.stderr[-500:]}")
 
-            # Upload to Google Drive if configured, otherwise fallback to local URL
-            drive = get_drive_service()
-            if drive:
-                video_title = data.get("video_title") or project_id
-                folder_id = drive.get_or_create_folder(video_title)
-                clip_url = drive.upload_clip(final_path, final_filename, folder_id)
-                try:
-                    os.remove(final_path)
-                except Exception as del_err:
-                    print(f"[{project_id}] Warning: could not delete local file: {del_err}")
-            else:
-                clip_url = f"/clips/{project_id}/{final_filename}"
-
-            # Generate social media caption
             update_status(project_id, "generating",
                           f"Generating caption for clip {clip_num}/{total}...")
             caption_data = generate_caption(
@@ -380,6 +366,24 @@ def generate_pipeline(project_id: str, selected_indices: List[int]):
                 language=data.get("language", "en"),
                 duration=clip.get("duration", clip_end - clip_start),
             )
+
+            # Upload to Google Drive if configured, otherwise fallback to local URL
+            drive = get_drive_service()
+            if drive:
+                video_title = data.get("video_title") or project_id
+                folder_id = drive.get_or_create_folder(video_title)
+                clip_url = drive.upload_clip(final_path, final_filename, folder_id)
+                # Upload caption .txt alongside the video
+                try:
+                    drive.upload_caption(caption_data, final_filename, folder_id)
+                except Exception as cap_err:
+                    print(f"[{project_id}] Warning: caption upload to Drive failed: {cap_err}")
+                try:
+                    os.remove(final_path)
+                except Exception as del_err:
+                    print(f"[{project_id}] Warning: could not delete local file: {del_err}")
+            else:
+                clip_url = f"/clips/{project_id}/{final_filename}"
 
             output_files.append({
                 "filename": final_filename,
