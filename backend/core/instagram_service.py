@@ -1,6 +1,7 @@
 import os
 import time
 import requests
+from datetime import datetime, timedelta, timezone
 
 
 class InstagramService:
@@ -9,6 +10,8 @@ class InstagramService:
     def __init__(self):
         self.user_id = os.getenv("INSTAGRAM_USER_ID", "")
         self.token = os.getenv("INSTAGRAM_ACCESS_TOKEN", "")
+        # Days to delay publishing (0 = publish immediately)
+        self.publish_delay_days = int(os.getenv("INSTAGRAM_PUBLISH_DELAY_DAYS", "0"))
 
     def is_configured(self) -> bool:
         return bool(self.user_id and self.token)
@@ -27,16 +30,28 @@ class InstagramService:
         Raises RuntimeError on failure.
         """
         # Step 1: Create media container
-        print(f"  [Instagram] Creating media container for: {video_url[:80]}...")
+        scheduled = self.publish_delay_days > 0
+        publish_time = None
+        if scheduled:
+            publish_time = datetime.now(timezone.utc) + timedelta(days=self.publish_delay_days)
+            print(f"  [Instagram] Scheduling reel for: {publish_time.isoformat()}")
+        else:
+            print(f"  [Instagram] Creating media container for: {video_url[:80]}...")
+
+        container_params = {
+            "video_url": video_url,
+            "caption": caption,
+            "media_type": "REELS",
+            "share_to_feed": "true",
+            "access_token": self.token,
+        }
+        if scheduled and publish_time:
+            container_params["published"] = "false"
+            container_params["scheduled_publish_time"] = str(int(publish_time.timestamp()))
+
         res = requests.post(
             f"{self.BASE}/{self.user_id}/media",
-            params={
-                "video_url": video_url,
-                "caption": caption,
-                "media_type": "REELS",
-                "share_to_feed": "true",
-                "access_token": self.token,
-            },
+            params=container_params,
             timeout=30,
         )
         data = res.json()
@@ -70,21 +85,25 @@ class InstagramService:
         else:
             raise RuntimeError("Instagram container did not finish processing within 6 minutes")
 
-        # Step 3: Publish
-        print(f"  [Instagram] Publishing reel...")
-        pub_res = requests.post(
-            f"{self.BASE}/{self.user_id}/media_publish",
-            params={
-                "creation_id": container_id,
-                "access_token": self.token,
-            },
-            timeout=30,
-        )
-        pub_data = pub_res.json()
-        if "error" in pub_data:
-            raise RuntimeError(f"Instagram publish failed: {pub_data['error']}")
-        post_id = pub_data["id"]
-        print(f"  [Instagram] Published: post_id={post_id}")
+        # Step 3: Publish (or confirm scheduled)
+        if scheduled:
+            print(f"  [Instagram] Reel scheduled for {self.publish_delay_days} day(s) later, skipping immediate publish")
+            post_id = container_id
+        else:
+            print(f"  [Instagram] Publishing reel...")
+            pub_res = requests.post(
+                f"{self.BASE}/{self.user_id}/media_publish",
+                params={
+                    "creation_id": container_id,
+                    "access_token": self.token,
+                },
+                timeout=30,
+            )
+            pub_data = pub_res.json()
+            if "error" in pub_data:
+                raise RuntimeError(f"Instagram publish failed: {pub_data['error']}")
+            post_id = pub_data["id"]
+            print(f"  [Instagram] Published: post_id={post_id}")
 
         # Step 4: Fetch permalink
         permalink_res = requests.get(
